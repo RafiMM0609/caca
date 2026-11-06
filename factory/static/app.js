@@ -48,13 +48,14 @@ async function refresh() {
     if (!projects.length) list.append(el("div", "Your first project starts here. Add a brief to begin.", "empty"));
     if (current) {
       const projectId = current;
-      const [project, events] = await Promise.all([api("/projects/" + projectId), api("/projects/" + projectId + "/events")]);
+      const [project, events] = await Promise.all([api("/projects/" + projectId), loadEvents(projectId)]);
       if (current === projectId) renderProject(project, events);
     }
   } finally { polling = false; }
 }
 function renderProject(project, events) {
   projectData = project;
+  renderWorkers(project, events);
   const active = project.jobs.some(job => ["queued", "running"].includes(job.state));
   $("project-name").textContent = project.name; $("project-brief").textContent = project.brief;
   $("project-profile").textContent = project.profile.toUpperCase() + " / REVISION " + project.revision;
@@ -93,3 +94,35 @@ $("source").onclick = () => showEvidence(() => api("/projects/" + current + "/so
 $("close-evidence").onclick = () => $("evidence-dialog").close();
 $("download").onclick = () => action(async () => { const response = await fetch("/api/projects/" + current + "/artifact", { headers: { Authorization: "Bearer " + token } }); if (!response.ok) throw new Error("Artifact download failed"); const url = URL.createObjectURL(await response.blob()), link = el("a"); link.href = url; link.download = "artifact-" + parsed(projectData.artifact).digest.slice(0, 12) + ".tar.gz"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
 setInterval(() => { if (token && !document.hidden) refresh().catch(error => notify(error.message, true)); }, 4000);
+
+async function loadEvents(project) {
+  const events = [];
+  let after = 0;
+  while (true) {
+    const page = await api("/projects/" + project + "/events?after=" + after);
+    events.push(...page);
+    if (page.length < 300) return events;
+    after = page[page.length - 1].seq;
+  }
+}
+function renderWorkers(project, events) {
+  const tree = $("worker-tree"), graph = workerGraph(project, events);
+  const opened = new Set([...tree.querySelectorAll('details[open]')].map(n => n.dataset.task));
+  tree.replaceChildren();
+  const planner = el("div", undefined, "worker-planner");
+  planner.append(el("strong", "Planner · " + project.name), badge(project.state === "planning" ? "running" : project.plan ? "plan_available" : "not_started"));
+  tree.append(planner);
+  if (!graph.tasks.length) tree.append(el("p", "Workers appear when a plan is available. Planned workers have not necessarily started.", "muted"));
+  for (const task of graph.tasks) {
+    const node = el("details", undefined, "worker-node"); node.dataset.task = task.id; node.open = opened.has(task.id);
+    const title = el("summary"); title.append(el("strong", "Worker · " + task.title), badge(task.state)); node.append(title);
+    node.append(el("p", task.instructions), el("p", "Dependencies: " + (task.depends_on.join(", ") || "None"), "muted"));
+    const criteria = el("ul"); task.acceptance.forEach(text => criteria.append(el("li", text))); node.append(criteria);
+    const reviewer = el("div", undefined, "worker-review"); reviewer.append(el("span", "Independent reviewer"), badge(task.review)); node.append(reviewer);
+    for (const event of task.events) { const detail = JSON.parse(event.detail); node.append(el("p", event.kind + (detail.attempt ? " · attempt " + detail.attempt : ""), "muted")); if (detail.findings?.length) node.append(el("p", detail.findings.join(" · "))); }
+    if (task.job) { const button = el("button", "Changes & review evidence", "quiet"); button.onclick = () => showEvidence(() => api("/jobs/" + task.job + "/evidence")); node.append(button); }
+    tree.append(node);
+  }
+  const verifier = el("div", undefined, "worker-planner"); verifier.append(el("strong", "Verifier · configured checks & build"), badge(graph.verification)); tree.append(verifier);
+  tree.append(el("p", "Worker acceptance is provisional until project verification passes. Execution uses the configured verifier; native Windows support is not yet implemented.", "muted"));
+}

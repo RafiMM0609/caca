@@ -125,12 +125,14 @@ class Engine:
                 if candidate.exists():
                     shutil.rmtree(candidate)
                 clone_tree(source, candidate)
+                store.event(project["id"], job["id"], "task.implementing", {"task": task.id, "attempt": attempt + 1})
                 change = self.generate(job["id"], "implementer", "Implement this task. Return complete UTF-8 file contents "
                                              "for changed files and explicit deletions. No placeholders. "
                                              "Verification commands and production credentials are outside your control.",
                                              {**context, "review_feedback": feedback}, Change, cancelled)
                 apply(candidate, change)
                 atomic_json(work / f"{task.id}-{attempt}-change.json", change.model_dump())
+                store.event(project["id"], job["id"], "task.reviewing", {"task": task.id, "attempt": attempt + 1})
                 review = self.generate(job["id"], "review", "Independently review correctness, acceptance criteria and "
                                              "security. Inspect the actual files. Reject incomplete or unsafe changes. "
                                              "You cannot certify test execution; the verifier does that separately.",
