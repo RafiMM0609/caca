@@ -1,0 +1,187 @@
+import hmac
+import json
+import shutil
+import time
+from collections import defaultdict, deque
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from .config import Settings
+from .db import Conflict, Store
+from .models import DeployInput, Plan, ProjectInput, StrictModel
+from .workspace import snapshot
+
+
+class PlanUpdate(StrictModel):
+    revision: int
+    plan: Plan
+
+
+def create_app(settings=None):
+    settings = settings or Settings.from_env()
+    settings.validate()
+    store = Store(settings.data / "factory.sqlite3")
+    app = FastAPI(title="Anton Software Factory", docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.store, app.state.settings = store, settings
+    attempts = defaultdict(deque)
+
+    @app.middleware("http")
+    async def guards(request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+                return JSONResponse({"detail": "Cross-origin writes are forbidden"}, status_code=403)
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > 256000:
+                    return JSONResponse({"detail": "Request body exceeds limit"}, status_code=413)
+            request._body = bytes(body)
+        response = await call_next(request)
+        response.headers.update({
+            "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
+            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
+                                       "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        })
+        return response
+
+    def role(request: Request, authorization: str = Header(default="")):
+        key = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        recent = attempts[key]
+        while recent and recent[0] < now - 60:
+            recent.popleft()
+        if len(recent) >= 20:
+            raise HTTPException(429, "Too many failed authentication attempts")
+        token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+        for name, expected in (("operator", settings.operator_token), ("release", settings.release_token)):
+            if hmac.compare_digest(token, expected):
+                return name
+        recent.append(now)
+        raise HTTPException(401, "Authentication required", headers={"WWW-Authenticate": "Bearer"})
+
+    def operator(actor=Depends(role)):
+        if actor != "operator":
+            raise HTTPException(403, "Operator token required")
+        return actor
+
+    @app.exception_handler(Conflict)
+    async def conflict(_, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(KeyError)
+    async def missing(_, exc):
+        return JSONResponse({"detail": "Record not found"}, status_code=404)
+
+    @app.get("/healthz")
+    def health():
+        return {"status": "ok"}
+
+    @app.get("/api/status")
+    def status(_=Depends(role)):
+        pulses = {r["key"]: time.time() - float(r["value"]) < 15 for r in store.all("SELECT * FROM runtime")}
+        return {"workers": pulses, "model_configured": bool(settings.model),
+                "omp_installed": bool(shutil.which(settings.omp)), "memorix_enabled": bool(settings.memorix),
+                "profiles": list(settings.profiles), "targets": list(settings.targets),
+                "mode": "single-operator", "version": "0.1.0"}
+
+    @app.get("/api/projects")
+    def projects(_=Depends(role)):
+        return store.all("SELECT * FROM projects ORDER BY created DESC LIMIT 200")
+
+    @app.post("/api/projects", status_code=201)
+    def create_project(payload: ProjectInput, _=Depends(operator)):
+        if payload.profile not in settings.profiles:
+            raise HTTPException(422, "Profile is not configured by the server operator")
+        return store.create_project(payload)
+
+    @app.get("/api/projects/{project}")
+    def project_detail(project: str, _=Depends(role)):
+        result = store.project(project)
+        result["jobs"] = store.all("SELECT * FROM jobs WHERE project_id=? ORDER BY created DESC LIMIT 100", (project,))
+        result["deployments"] = store.all("SELECT * FROM deployments WHERE project_id=? ORDER BY created DESC", (project,))
+        return result
+
+    @app.post("/api/projects/{project}/plan", status_code=202)
+    def plan(project: str, _=Depends(operator)):
+        if not settings.model or not shutil.which(settings.omp):
+            raise HTTPException(503, "Configure OMP and FACTORY_MODEL before requesting an AI plan")
+        return store.enqueue(project, "plan", allowed={"draft", "awaiting_plan", "ready", "failed", "cancelled", "interrupted"},
+                             next_state="planning")
+
+    @app.put("/api/projects/{project}/plan")
+    def update_plan(project: str, payload: PlanUpdate, _=Depends(operator)):
+        with store.tx() as db:
+            row = db.execute("SELECT * FROM projects WHERE id=?", (project,)).fetchone()
+            if not row:
+                raise KeyError(project)
+            if row["revision"] != payload.revision:
+                raise Conflict("Plan revision changed; reload before editing")
+            if db.execute("SELECT 1 FROM jobs WHERE project_id=? AND state IN ('running','queued')", (project,)).fetchone():
+                raise Conflict("Cannot edit plan while a job is active")
+            db.execute("UPDATE projects SET plan=?,revision=revision+1,state='awaiting_plan' WHERE id=?",
+                       (payload.plan.model_dump_json(), project))
+            store.event_tx(db, project, None, "plan.edited", {"revision": payload.revision + 1})
+        return store.project(project)
+
+    @app.post("/api/projects/{project}/approve", status_code=202)
+    def approve(project: str, revision: int = Query(ge=1), _=Depends(operator)):
+        return store.enqueue(project, "build", {"revision": revision},
+                             allowed={"awaiting_plan", "failed", "cancelled", "interrupted"}, next_state="building")
+
+    @app.post("/api/projects/{project}/deploy", status_code=202)
+    def deploy(project: str, payload: DeployInput, actor=Depends(role)):
+        if payload.environment == "production" and actor != "release":
+            raise HTTPException(403, "Production approval requires the separate release token")
+        if project + ":" + payload.environment not in settings.targets:
+            raise HTTPException(422, "Configure this project's explicit deployment target on the server")
+        return store.enqueue(project, "deploy", payload.model_dump(), allowed={"ready"})
+
+    @app.post("/api/jobs/{job}/cancel", status_code=202)
+    def cancel(job: str, _=Depends(operator)):
+        store.cancel(job)
+        return {"status": "cancellation_requested"}
+
+    @app.get("/api/projects/{project}/events")
+    def events(project: str, after: int = Query(default=0, ge=0), _=Depends(role)):
+        store.project(project)
+        return store.all("SELECT * FROM events WHERE project_id=? AND seq>? ORDER BY seq LIMIT 300", (project, after))
+
+    @app.get("/api/jobs/{job}/evidence")
+    def evidence(job: str, _=Depends(role)):
+        row = store.one("SELECT * FROM jobs WHERE id=?", (job,))
+        root = settings.data / "jobs" / row["id"]
+        result = {}
+        if root.exists():
+            for path in sorted(root.iterdir()):
+                if path.is_file() and path.suffix in (".json", ".txt"):
+                    result[path.name] = path.read_text()[:300000]
+        return result
+
+    @app.get("/api/projects/{project}/source")
+    def source(project: str, _=Depends(role)):
+        artifact = json.loads(store.project(project)["artifact"] or "null")
+        if not artifact:
+            raise HTTPException(404, "No verified source yet")
+        return snapshot(settings.data / "jobs" / artifact["job_id"] / "source")
+
+    @app.get("/api/projects/{project}/artifact")
+    def artifact_download(project: str, _=Depends(role)):
+        artifact = json.loads(store.project(project)["artifact"] or "null")
+        if not artifact:
+            raise HTTPException(404, "No verified artifact yet")
+        return FileResponse(settings.data / "jobs" / artifact["job_id"] / "artifact.tar.gz",
+                            filename=f"{project}-{artifact['digest'][:12]}.tar.gz", media_type="application/gzip")
+
+    static = Path(__file__).parent / "static"
+    app.mount("/assets", StaticFiles(directory=static), name="assets")
+
+    @app.get("/")
+    def index():
+        return FileResponse(static / "index.html")
+
+    return app

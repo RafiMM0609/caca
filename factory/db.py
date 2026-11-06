@@ -1,0 +1,197 @@
+import json
+import sqlite3
+import time
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+
+
+def uid():
+    return uuid.uuid4().hex
+
+
+class Conflict(ValueError):
+    pass
+
+
+class Store:
+    def __init__(self, path: Path):
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self.connect() as db:
+            db.executescript("""
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS schema_version(version INTEGER PRIMARY KEY);
+                INSERT OR IGNORE INTO schema_version VALUES(1);
+                CREATE TABLE IF NOT EXISTS projects(
+                  id TEXT PRIMARY KEY, name TEXT NOT NULL, brief TEXT NOT NULL, profile TEXT NOT NULL,
+                  state TEXT NOT NULL DEFAULT 'draft', revision INTEGER NOT NULL DEFAULT 0,
+                  plan TEXT, artifact TEXT, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS jobs(
+                  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), kind TEXT NOT NULL,
+                  state TEXT NOT NULL DEFAULT 'queued', payload TEXT NOT NULL DEFAULT '{}',
+                  result TEXT, error TEXT, created REAL NOT NULL, started REAL, finished REAL,
+                  heartbeat REAL, cancel INTEGER NOT NULL DEFAULT 0, reserved_usd REAL NOT NULL DEFAULT 0);
+                CREATE UNIQUE INDEX IF NOT EXISTS one_active_project ON jobs(project_id)
+                  WHERE state IN ('queued','running');
+                CREATE TABLE IF NOT EXISTS events(
+                  seq INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT, job_id TEXT,
+                  kind TEXT NOT NULL, detail TEXT NOT NULL, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS deployments(
+                  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                  job_id TEXT NOT NULL, environment TEXT NOT NULL, digest TEXT NOT NULL,
+                  state TEXT NOT NULL, receipt TEXT, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            """)
+
+    def connect(self):
+        db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA busy_timeout=10000")
+        db.execute("PRAGMA synchronous=FULL")
+        return db
+
+    @contextmanager
+    def tx(self):
+        db = self.connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            yield db
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def all(self, sql, args=()):
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(sql, args)]
+
+    def one(self, sql, args=()):
+        rows = self.all(sql, args)
+        if not rows:
+            raise KeyError("Record not found")
+        return rows[0]
+
+    @staticmethod
+    def event_tx(db, project, job, kind, detail):
+        db.execute("INSERT INTO events(project_id,job_id,kind,detail,created) VALUES(?,?,?,?,?)",
+                   (project, job, kind, json.dumps(detail), time.time()))
+
+    def event(self, project, job, kind, detail):
+        with self.tx() as db:
+            self.event_tx(db, project, job, kind, detail)
+
+    def create_project(self, payload):
+        project = uid()
+        with self.tx() as db:
+            db.execute("INSERT INTO projects(id,name,brief,profile,created) VALUES(?,?,?,?,?)",
+                       (project, payload.name, payload.brief, payload.profile, time.time()))
+            self.event_tx(db, project, None, "project.created", {"name": payload.name})
+        return self.project(project)
+
+    def project(self, project):
+        return self.one("SELECT * FROM projects WHERE id=?", (project,))
+
+    def enqueue(self, project, kind, payload=None, allowed=None, next_state=None):
+        job = uid()
+        try:
+            with self.tx() as db:
+                row = db.execute("SELECT * FROM projects WHERE id=?", (project,)).fetchone()
+                if row is None:
+                    raise KeyError("Project not found")
+                if allowed and row["state"] not in allowed:
+                    raise Conflict(f"Project is {row['state']}")
+                if kind == "build":
+                    if not payload or payload.get("revision") != row["revision"]:
+                        raise Conflict("Plan revision changed; review it again")
+                    if not row["plan"] or json.loads(row["plan"])["questions"]:
+                        raise Conflict("Resolve planner questions before approval")
+                    payload = {"revision": row["revision"]}
+                if kind == "deploy":
+                    artifact = json.loads(row["artifact"] or "null")
+                    if not artifact or artifact["digest"] != payload["digest"]:
+                        raise Conflict("Release digest differs from current artifact")
+                    env = payload["environment"]
+                    if env == "production" and not db.execute(
+                        "SELECT 1 FROM deployments WHERE project_id=? AND environment='staging' "
+                        "AND digest=? AND state='succeeded'", (project, payload["digest"])
+                    ).fetchone():
+                        raise Conflict("This exact artifact must pass staging first")
+                    if db.execute("SELECT 1 FROM deployments WHERE project_id=? AND environment=? "
+                                  "AND digest=? AND state='succeeded'", (project, env, payload["digest"])).fetchone():
+                        raise Conflict("Artifact already deployed to this environment")
+                    unresolved = db.execute("SELECT 1 FROM deployments WHERE project_id=? AND environment=? "
+                                            "AND state IN ('running','unknown')", (project, env)).fetchone()
+                    if unresolved:
+                        raise Conflict("Reconcile the unresolved deployment before another release")
+                db.execute("INSERT INTO jobs(id,project_id,kind,payload,created) VALUES(?,?,?,?,?)",
+                           (job, project, kind, json.dumps(payload or {}), time.time()))
+                if next_state:
+                    db.execute("UPDATE projects SET state=? WHERE id=?", (next_state, project))
+                self.event_tx(db, project, job, f"{kind}.queued", payload or {})
+        except sqlite3.IntegrityError as exc:
+            raise Conflict("Project already has an active job") from exc
+        return self.one("SELECT * FROM jobs WHERE id=?", (job,))
+
+    def claim(self, lane="build"):
+        with self.tx() as db:
+            predicate = "kind='deploy'" if lane == "deploy" else "kind!='deploy'"
+            row = db.execute("SELECT * FROM jobs WHERE state='queued' AND " + predicate + " ORDER BY created,id LIMIT 1").fetchone()
+            if not row:
+                return None
+            now = time.time()
+            db.execute("UPDATE jobs SET state='running',started=?,heartbeat=? WHERE id=?", (now, now, row["id"]))
+            self.event_tx(db, row["project_id"], row["id"], "job.started", {})
+            return dict(row)
+
+    def finish(self, job, state, result=None, error=None):
+        with self.tx() as db:
+            row = db.execute("SELECT * FROM jobs WHERE id=?", (job,)).fetchone()
+            db.execute("UPDATE jobs SET state=?,result=?,error=?,finished=? WHERE id=?",
+                       (state, json.dumps(result), error, time.time(), job))
+            if row["kind"] != "deploy" and state != "succeeded":
+                db.execute("UPDATE projects SET state=? WHERE id=?", (state, row["project_id"]))
+            self.event_tx(db, row["project_id"], job, f"job.{state}", {"error": error})
+
+    def recover(self, lane="build"):
+        # Called only while holding the single scheduler's flock. Never replay a side effect.
+        with self.tx() as db:
+            predicate = "kind='deploy'" if lane == "deploy" else "kind!='deploy'"
+            for row in db.execute("SELECT * FROM jobs WHERE state='running' AND " + predicate).fetchall():
+                db.execute("UPDATE jobs SET state='interrupted',error=?,finished=? WHERE id=?",
+                           ("Scheduler restarted; inspect evidence before retry", time.time(), row["id"]))
+                if row["kind"] != "deploy":
+                    db.execute("UPDATE projects SET state='interrupted' WHERE id=?", (row["project_id"],))
+                db.execute("UPDATE deployments SET state='unknown' WHERE job_id=? AND state='running'", (row["id"],))
+                self.event_tx(db, row["project_id"], row["id"], "job.interrupted", {})
+
+    def cancel(self, job):
+        with self.tx() as db:
+            row = db.execute("SELECT * FROM jobs WHERE id=?", (job,)).fetchone()
+            if not row:
+                raise KeyError("Job not found")
+            if row["state"] not in ("queued", "running"):
+                raise Conflict("Job is already terminal")
+            if row["state"] == "queued":
+                db.execute("UPDATE jobs SET state='cancelled',cancel=1,finished=? WHERE id=?", (time.time(), job))
+                if row["kind"] != "deploy":
+                    db.execute("UPDATE projects SET state='cancelled' WHERE id=?", (row["project_id"],))
+            else:
+                db.execute("UPDATE jobs SET cancel=1 WHERE id=?", (job,))
+            self.event_tx(db, row["project_id"], job, "job.cancel_requested", {})
+
+    def heartbeat(self, job=None, lane="build"):
+        with self.tx() as db:
+            now = time.time()
+            db.execute("INSERT OR REPLACE INTO runtime VALUES(?,?)", (lane + "_heartbeat", str(now)))
+            if job:
+                db.execute("UPDATE jobs SET heartbeat=? WHERE id=? AND state='running'", (now, job))
+
+    def backup(self, destination):
+        with self.connect() as source, sqlite3.connect(destination) as dest:
+            source.backup(dest)
+            if dest.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("Backup integrity check failed")

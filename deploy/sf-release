@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Install root-owned, run as an unprivileged per-application release account."""
+import fcntl
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.request
+from pathlib import Path, PurePosixPath
+
+
+def write_json(path, data):
+    temp = path.with_suffix(".tmp")
+    with temp.open("w") as file:
+        json.dump(data, file)
+        file.flush()
+        os.fsync(file.fileno())
+    temp.replace(path)
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def extract(data, directory):
+    total, count, seen = 0, 0, set()
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+        for item in archive:
+            path = PurePosixPath(item.name)
+            if (not item.isfile() or item.name in seen or path.is_absolute() or str(path) != item.name
+                    or ".." in path.parts or "\\" in item.name
+                    or any(ord(c) < 32 for c in item.name)
+                    or any(p in (".git", ".ssh", ".env") or p.startswith(".env.") for p in path.parts)):
+                raise ValueError("Unsafe archive entry")
+            total += item.size
+            count += 1
+            if total > 20_000_000 or count > 10000:
+                raise ValueError("Artifact exceeds limits")
+            seen.add(item.name)
+            destination = directory / item.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.extractfile(item) as source, destination.open("xb") as target:
+                shutil.copyfileobj(source, target)
+                target.flush()
+                os.fsync(target.fileno())
+            destination.chmod(0o755 if item.mode & 0o111 else 0o644)
+    if not count:
+        raise ValueError("Empty artifact")
+
+
+def health(config):
+    # Only the administrator controls this URL. No redirects or proxy routing to another host.
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    for _ in range(config.get("health_attempts", 15)):
+        try:
+            with opener.open(config["health_url"], timeout=2) as response:
+                if response.status == 200:
+                    return True
+        except (OSError, ValueError):
+            pass
+        time.sleep(1)
+    return False
+
+
+def switch(root, digest):
+    link = root / "current.next"
+    link.unlink(missing_ok=True)
+    if digest:
+        link.symlink_to("releases/" + digest)
+        link.replace(root / "current")
+    else:
+        (root / "current").unlink(missing_ok=True)
+    descriptor = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def current_digest(root):
+    link = root / "current"
+    if not link.is_symlink():
+        if link.exists():
+            raise ValueError("current must be a managed symlink")
+        return None
+    target = os.readlink(link)
+    if not re.fullmatch(r"releases/[a-f0-9]{64}", target):
+        raise ValueError("Unexpected release symlink")
+    return target.split("/")[1]
+
+
+def restart(config):
+    argv = config.get("restart_argv", [])
+    if argv:
+        subprocess.run(argv, check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def operate(config, action, digest=None, data=b""):
+    root = Path(config["root"])
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "releases").mkdir(exist_ok=True)
+    with (root / "release.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        journal = root / "release.json"
+        prior = json.loads(journal.read_text()) if journal.exists() else {}
+        current = current_digest(root)
+        if action == "status":
+            if prior.get("status") in ("deploying", "rollback_failed"):
+                return {"status": "unknown", "digest": current, "journal": prior}
+            return {"status": "healthy" if current and health(config) else "unhealthy", "digest": current}
+        if action == "recover":
+            if prior.get("status") not in ("deploying", "rollback_failed"):
+                raise ValueError("No interrupted release to recover")
+            previous = prior.get("previous")
+            switch(root, previous)
+            restart(config)
+            healthy = bool(previous and health(config))
+            result = {**prior, "status": "rolled_back" if healthy or not previous else "rollback_failed"}
+            write_json(journal, result)
+            return result
+        if action != "apply" or not re.fullmatch(r"[a-f0-9]{64}", digest or ""):
+            raise ValueError("Expected apply <sha256>, status, or recover")
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError("Artifact checksum mismatch")
+        if prior.get("status") in ("deploying", "rollback_failed"):
+            raise ValueError("Recover interrupted deployment before applying another")
+        if current == digest and health(config):
+            return {"status": "healthy", "digest": digest, "idempotent": True}
+        release = root / "releases" / digest
+        if not release.exists():
+            with tempfile.TemporaryDirectory(dir=root / "releases", prefix="incoming-") as temp:
+                stage = Path(temp) / "app"
+                stage.mkdir()
+                extract(data, stage)
+                stage.rename(release)
+        record = {"status": "deploying", "digest": digest, "previous": current, "created": time.time()}
+        write_json(journal, record)
+        try:
+            switch(root, digest)
+            restart(config)
+            if not health(config):
+                raise RuntimeError("Release health check failed")
+            result = {**record, "status": "healthy"}
+            write_json(journal, result)
+            return result
+        except Exception:
+            switch(root, current)
+            try:
+                restart(config)
+                recovered = not current or health(config)
+            except Exception:
+                recovered = False
+            write_json(journal, {**record, "status": "rolled_back" if recovered else "rollback_failed"})
+            raise RuntimeError("Release failed; inspect release journal and previous application health") from None
+
+
+def main():
+    # Config path is fixed. Do not allow an SSH caller to select a different application root.
+    config = json.loads(Path("/etc/software-factory-release.json").read_text())
+    action = sys.argv[1] if len(sys.argv) > 1 else "status"
+    digest = sys.argv[2] if len(sys.argv) == 3 else None
+    data = sys.stdin.buffer.read(32_000_001) if action == "apply" else b""
+    if len(data) > 32_000_000:
+        raise ValueError("Compressed artifact too large")
+    print(json.dumps(operate(config, action, digest, data)))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(type(exc).__name__ + ": release action failed; inspect server journal", file=sys.stderr)
+        raise SystemExit(1)
+

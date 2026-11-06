@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+ api) exec /opt/software-factory/.venv/bin/factory api ;;
+ build) exec /opt/software-factory/.venv/bin/factory scheduler --lane build ;;
+ release) exec /opt/software-factory/.venv/bin/factory scheduler --lane deploy ;;
+ *) exit 2 ;;
+esac

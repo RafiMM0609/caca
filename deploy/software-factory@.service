@@ -1,0 +1,24 @@
+[Unit]
+Description=Anton Software Factory %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=software-factory
+Group=software-factory
+WorkingDirectory=/opt/software-factory
+EnvironmentFile=/etc/software-factory/runtime.env
+ExecStart=/opt/software-factory/deploy/start-service %i
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/software-factory
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
