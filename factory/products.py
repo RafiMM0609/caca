@@ -237,3 +237,27 @@ def export_tree(root: Path, destination: Path) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
     return destination
+
+
+def tracked_files(worktree: Path) -> list[str]:
+    """Files git knows about in a worktree, so a replacement can remove exactly those."""
+    out = _run(["ls-files"], cwd=worktree, timeout=60)
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def export_tree_worktree(worktree: Path, destination: Path) -> Path:
+    """Copy a worktree's files, including uncommitted ones, without its git metadata."""
+    import shutil
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    for path in sorted(worktree.rglob("*")):
+        if ".git" in path.relative_to(worktree).parts:
+            continue
+        relative = path.relative_to(worktree)
+        if path.is_symlink() or not path.is_file():
+            continue
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+    return destination
