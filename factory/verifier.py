@@ -79,6 +79,25 @@ class NativeVerifier:
                     (source.parent / "verification.txt").write_text("\n".join(logs)[-100000:])
                     raise
                 logs.append(f"STEP {index + 1} PASS: {command[0]}\n{log}")
+            if profile.checks_dir:
+                # Operator-owned checks run in the same disposable build tree, after the build,
+                # so a passing build cannot skip them. They are not generated application code.
+                checks = Path(profile.checks_dir).resolve()
+                if not checks.is_dir():
+                    raise ValueError("Operator-owned checks directory is missing")
+                for check_index, check in enumerate(profile.checks_argv):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RuntimeError("Native verification deadline exceeded")
+                    argv = [str(arg).replace("{checks}", str(checks)) for arg in check]
+                    try:
+                        log = run(argv, cwd=work, env=env, timeout=remaining,
+                                  cancelled=cancelled, max_output=2_000_000)
+                    except ProcessError as exc:
+                        logs.append(f"CHECK {check_index + 1} FAILED: {check[0]}\n" + getattr(exc, "output", str(exc)))
+                        (source.parent / "verification.txt").write_text("\n".join(logs)[-100000:])
+                        raise
+                    logs.append(f"CHECK {check_index + 1} PASS: {check[0]}\n{log}")
             if suite:
                 from .local_app import LocalApp
                 from .testing import run_suite

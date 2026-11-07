@@ -13,6 +13,8 @@ Checkpoint: 2026-11-07, after implementation commit `943f044`. Read [origin and 
 - Local Nuxt Studio draft workspace, loopback preview, content diff, stale-draft rejection and content-only verification jobs. Apply does not invoke implementer regeneration.
 - A pinned Nuxt 4.6.4 / Content 3.16.2 / Studio 1.8.0 starter and regular-file build export. Production Studio is disabled in the starter.
 - Optional Memorix MCP adapter. Legacy deploy lane/helper remain in source; local profiles have no targets and dashboard deploy controls are hidden.
+- Operator-owned post-build checks wired into native verification (`checks_argv` + `checks_dir`). The active Nuxt profile runs `checks/secret_scan.py` so a build that embeds a provider credential cannot be published.
+- Strengthened browser test contract: `HEAD` requests, plus `reload`, `select`, `press`, `expect_hidden`, `expect_count` and `expect_url`. Browser cases now fail on uncaught page exceptions and console errors unless the case explicitly sets `allow_console_errors`.
 
 ## Code map
 
@@ -47,17 +49,22 @@ Checkpoint: 2026-11-07, after implementation commit `943f044`. Read [origin and 
 
 ## Last executed evidence
 
-- Python suite: **58 passed, 2 skipped**, with one upstream Starlette/httpx deprecation warning. The skipped tests were the optional Docker tests in this run.
+- Python suite: **81 passed, 2 skipped**, with one upstream Starlette/httpx deprecation warning. The skipped tests were the optional Docker tests in this run.
 - Worker-state JavaScript tests: **8 passed**. Lint, syntax and diff-whitespace checks passed.
+- Validation gates were exercised against a real Playwright Chromium on 2026-11-07: `expect_count`/`expect_hidden`/`expect_url`/`reload` passed on a live local server; an uncaught page exception and a `console.error` were both blocked; `allow_console_errors` let the reviewed case through. `checks/secret_scan.py` passed a clean artifact and blocked credential-shaped values and a literal `OPENCODE_API_KEY` value. An end-to-end build test confirms a leaking build stays `failed` with no artifact.
 - Actual dashboard journey passed: create starter → clean npm installation → Nuxt build → 3 API/browser cases → embedded Studio title edit → diff → apply revision 2 → rebuild → all 3 cases passed again. Prior artifact retained; desktop/mobile screenshots captured.
 - Concurrent tester test uses synchronization to require overlap with implementation. Negative tests cover real browser assertion failure with evidence and integration failure blocking an artifact.
 - The real editor journey is reproducible with `scripts/validate_studio_journey.py`; manual GitHub Actions execution also runs it and uploads selected report/screenshots.
 
 **AI model responses were scripted test doubles.** npm, Nuxt Studio, local app servers, HTTP requests and Chromium interactions were real. These results do not validate live OMP generation or live Memorix. Local evidence lives in ignored `data/validation/` in the original workspace and is not guaranteed to exist in a fresh clone. The reproducible commands and recorded result are the portable evidence.
 
+**Known gaps in this validation round.** The full Nuxt Studio journey was **not** re-run after the tester contract and checks changed; the last full-journey evidence predates these edits. Live Pi generation still fails intermittently (see remaining work 1) and was not re-tested here. There is still no lint or TypeScript typecheck step: the starter lockfile ships `typescript` but not `vue-tsc`, and adding a dependency would require regenerating the validated lockfile. The secret scan is a pattern and exact-value scan over text files up to 20 MB; it is not entropy analysis and will not catch an obfuscated or split credential.
+
 ## Remaining work — do not report as finished
 
 1. Live Pi provider generation/review/tester acceptance for factory stages (planner, implementer, reviewer, tester) with the OpenCode Go provider; validate structured output, error handling, quota limits and real billing behavior. Adapter-level single-call validation passed (2026-11-07).
+
+   Measured on 2026-11-07 with `opencode-go/deepseek-v4.1-flash`: through the Pi CLI, planner 3/3, tester 1/3 and implementer 0/3 produced valid JSON; overriding `--system-prompt` did not fix it. Pi injects a hardcoded coding-agent preamble and offers no constrained decoding, so a model that believes it has tools emits `<tool_call>` XML. Calling the provider directly with `response_format: json_schema` (strict) returned tester 5/5 and implementer 3/3 at roughly a third of the latency. The endpoint requires an `x-opencode-session` header, and using it bypasses Pi, so subscription terms must be checked before choosing that path.
 2. Live Memorix search/store roundtrip, project isolation and failure behavior.
 3. Native Windows lifecycle/locks/process cleanup/npm executable support plus real Windows integration/browser tests. Currently Linux-specific code remains.
 4. Richer editable schemas/components, media import, arbitrary code editing or chat-based change requests only if prioritized by the owner. Studio currently edits scoped content.

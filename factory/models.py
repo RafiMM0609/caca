@@ -89,6 +89,8 @@ class Profile(StrictModel):
     verify_argv: list[str] = Field(default_factory=list, max_length=50)
     artifact_dir: str = "dist"
     checks_dir: str = ""
+    # Native-only operator-owned checks, run after the build in the disposable tree.
+    checks_argv: list[list[str]] = Field(default_factory=list, max_length=10)
     timeout: int = Field(default=300, ge=10, le=3600)
     memory_mb: int = Field(default=1024, ge=128, le=8192)
     cpus: float = Field(default=1, ge=0.25, le=8)
@@ -112,6 +114,8 @@ class Profile(StrictModel):
         if self.runner == "native":
             if not self.commands or any(not command or any(not arg for arg in command) for command in self.commands):
                 raise ValueError("Native profiles require nonempty command argument arrays")
+            if self.checks_argv and not self.checks_dir:
+                raise ValueError("Native checks_argv requires an operator-owned checks_dir")
             return self
         if not self.verify_argv or not self.checks_dir:
             raise ValueError("Docker profiles require checks and verify_argv")

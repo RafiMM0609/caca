@@ -22,7 +22,15 @@
       ],
       "readiness_path": "/api/health",
       "timeout": 900,
-      "qa_timeout": 120
+      "qa_timeout": 120,
+      "checks_dir": "/home/anton/Documents/Default Project/caca/checks",
+      "checks_argv": [
+        [
+          "python3",
+          "{checks}/secret_scan.py",
+          "release"
+        ]
+      ]
     }
   },
   "targets": {}
