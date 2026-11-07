@@ -1,6 +1,8 @@
 # Anton Software Factory
 
-A single-operator Linux software factory with SQLite workflow state, Oh My Pi model workers, independent review, disposable Docker verification, optional Memorix project memory, and checksum-bound SSH releases.
+A single-operator Linux software factory with SQLite workflow state, Oh My Pi model workers, independent review/testing, native or Docker verification, optional Memorix project memory, and local Nuxt Studio editing. The current milestone ends at a tested build; deployment is deferred.
+
+Continuing agents: start with [AGENTS.md](AGENTS.md), then the [knowledge and project history](docs/knowledge/README.md).
 
 **Release status: pre-production 0.1.0.** The workflow and container isolation have automated tests. Live model generation, Memorix interoperability, and deployment to your actual servers still require acceptance testing with your credentials. This is not yet a certified production system for POS, financial transactions, ERP, or mutually untrusted tenants.
 
@@ -36,11 +38,11 @@ In separate terminals with the same environment, run `uv run factory scheduler -
 
 Create a project, generate or enter its plan, resolve questions, and approve the exact revision. Implementer and reviewer use separate OMP invocations. Successful review is followed by operator-owned checks inside a network-disabled container. Download the verified artifact and source from the dashboard. Configure explicit per-project staging and production targets to enable release buttons.
 
-The included static profile supports HTML/CSS/JavaScript sites; the Nuxt Studio profile adds a schema-backed editable starter. Additional application types require administrator-owned runtime images and acceptance checks; the factory does not currently ship complete CRUD, POS, ERP, templates. Additional Nuxt Studio content schemas and reusable layouts remain application-specific work.
+The included static profile supports HTML/CSS/JavaScript sites; the Nuxt Studio profile adds a schema-backed editable starter. Additional application types require administrator-owned runtime images and acceptance checks; the factory does not currently ship complete CRUD, POS or ERP templates. Additional Nuxt Studio content schemas and reusable layouts remain application-specific work.
 
 ## Boundaries
 
-- OMP is used as a tool-free structured generation client, not an unrestricted shell agent. Whole UTF-8 file changes are validated before applying. No generated code executes on the host.
+- OMP is used as a tool-free structured generation client, not an unrestricted shell agent. Whole UTF-8 file changes are validated before applying. Generated code executes on the host only when native execution is explicitly enabled; Docker profiles execute it in a container.
 - One build scheduler and one deployment scheduler use distinct process locks. Jobs are durable and atomically claimed. Interrupted work is marked for inspection, never blindly replayed.
 - Memory is optional. `FACTORY_MEMORIX=/path/to/memorix` enables project-scoped MCP search/store. Memorix failure emits an event and does not replace SQLite task truth. The adapter targets documented `memorix_search` and `memorix_store` tools; live interoperability is not yet verified.
 - Context is limited to 300 KB of text source excluding dependency lockfiles (2 MB total source limit); exported artifacts to 20 MB and 10,000 files. This release is intended for small initial projects.
