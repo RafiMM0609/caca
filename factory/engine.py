@@ -72,7 +72,12 @@ class Engine:
             if job["kind"] == "plan":
                 context = {"brief": project["brief"], "profile": project["profile"], "verification": settings.profiles[project["profile"]].model_dump(),
                            "memory": self.memory_operation(project_id, job_id, "search", project["brief"])}
-                plan = self.generate(job_id, "planner", "Design a concrete ordered task plan with acceptance criteria. "
+                plan = self.generate(job_id, "planner", "Design a concrete task plan with acceptance criteria. "
+                                           "Tasks form a DAG: use depends_on to declare real dependencies. Tasks "
+                                           "whose dependencies are satisfied run in parallel as separate workers, "
+                                           "so leave depends_on empty for work that can proceed independently, and "
+                                           "declare an ordering only where the work truly requires it. Each task "
+                                           "must be achievable by one worker on its own worktree. "
                                            "List unresolved business questions in questions. Do not invent requirements. "
                                            "The static profile serves plain HTML/CSS/JS, with index.html at the root. "
                                            "Other profiles must follow the operator's verification contract. "

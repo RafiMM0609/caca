@@ -5,11 +5,11 @@
 The factory remains local and build-focused. No deployment is triggered by these actions.
 
 1. Configure the `nuxt-studio` profile, open the local dashboard, and create a project.
-2. For an empty project, **Create & test Studio starter** initializes the included Nuxt/Content/Studio application and verifies it. Alternatively, have the planner and workers produce an application compatible with that profile.
+2. For an empty project, **Create & test Studio starter** initializes the included Nuxt/Content/Studio application and verifies it. Alternatively, let the planner and Pi workers produce an application compatible with that profile.
 3. On a verified project, **Open editable draft** copies its source into a separate workspace, installs locked dependencies, and starts a loopback-only Nuxt dev server. Only one Studio preview runs at a time; it expires after 30 minutes.
 4. The dashboard embeds the application on a separate local origin. Use its Studio toggle, open `site.json`, and edit fields such as brand, hero title, description, button text, accent color and features. The official Studio module provides the form UI and live preview. You may also open it in a new tab.
-5. **Review changes** stops the preview to freeze the draft and shows before/after content. **Apply & test** imports content as a new source revision and queues verification. It does not ask an implementer to regenerate the edited UI.
-6. Independent tests and the build must pass before the new artifact becomes current. The previous verified source/artifact remains available. A stale draft is rejected instead of overwriting a newer revision. Stopped drafts are retained and can be reopened; discarding is explicit.
+5. **Review changes** stops the preview to freeze the draft and shows before/after content. **Apply & test** imports content as a new source revision and queues verification. It does not ask a worker to regenerate the edited UI.
+6. The applied draft is imported onto its own branch of the product repository and merged **only after** verification passes. Independent tests and the build must succeed before the new artifact becomes current, so a failed edit cannot overwrite the previously verified artifact. A stale draft is rejected instead of overwriting a newer revision. Stopped drafts are retained and can be reopened; discarding is explicit.
 
 This implements content-driven UI editing, not arbitrary Vue source editing or a general drag-and-drop app builder. Only Markdown, JSON and YAML under `content/` are imported. The first version does not import uploaded media or changes to application logic/configuration. The starter's theme and fields are deliberately exposed through a Nuxt Content schema. Additional components need explicit editable props/schema.
 
@@ -17,7 +17,7 @@ Nuxt Studio is enabled in development and disabled for production builds in the 
 
 ## Local Linux setup
 
-Requires Node 24 (tested with 24.22.1), npm, Python 3.12+, Git, uv, the installed Pi 1.5.0 CLI (`npm i -g @earendil-works/pi-coding-agent`), and a configured provider credential for live agent work.
+Requires Node 24, npm, Python 3.12+, Git, uv, the installed Pi 1.5.0 CLI (`npm i -g @earendil-works/pi-coding-agent`), and a configured provider credential for live worker work.
 
 ```sh
 uv sync --frozen
@@ -33,18 +33,23 @@ export FACTORY_MODEL=provider/model
 # Optional: separate model choices for reviewer and tester.
 # export FACTORY_REVIEW_MODEL=provider/model
 # export FACTORY_TESTER_MODEL=provider/model
+# Optional: how many Pi workers may run at once (default 3, max 16).
+# export FACTORY_WORKER_CONCURRENCY=3
 uv run factory api
 # Another terminal, same environment:
 uv run factory scheduler --lane build
 ```
 
-`FACTORY_CHROMIUM` optionally selects an already installed Chromium executable. `FACTORY_NPM_CACHE` optionally selects a shared local npm cache to avoid repeatedly downloading dependencies. Provider and factory tokens are not inherited by generated applications. Native execution still has the local OS account's filesystem/network authority and is not a sandbox. Use it only for trusted local work.
+`FACTORY_CHROMIUM` optionally selects an already installed Chromium executable. `FACTORY_NPM_CACHE` optionally selects a shared local npm cache. Provider credentials reach Pi workers because the model call needs them; factory tokens do not. Each worker still gets an isolated temporary `HOME`, so `~/.ssh` and `~/.aws` are unreachable. Native execution has the local OS account's filesystem and network authority and is **not** a sandbox.
 
 The starter is pinned to Nuxt 4.6.4, Nuxt Content 3.16.2 and Nuxt Studio 1.8.0. Its lockfile excludes npm-marked extraneous packages that caused cross-platform `npm ci` failures. Verification tests the materialized `release/server/index.mjs` output that is subsequently packaged; internal Nitro links are resolved only within the build directory and exported as regular files.
 
-## Parallel tester design
+## How implementation and testing run together
 
-The planner includes `test_flows` alongside implementation tasks:
+The planner produces a task DAG plus `test_flows`. Two things then happen concurrently:
+
+- **Workers implement.** Every task whose dependencies have merged runs as its own Pi harness worker in its own git worktree, bounded by `FACTORY_WORKER_CONCURRENCY`. Each worker's diff is reviewed before it may merge. When the whole wave finishes, accepted branches merge into the product branch one at a time; a conflict spawns a fixer worker and the wave retries.
+- **The tester prepares.** An independent Pi invocation receives the planner's flow contract — not the worker's code — and returns a declarative suite.
 
 ```json
 {
@@ -60,29 +65,39 @@ The planner includes `test_flows` alongside implementation tasks:
 }
 ```
 
-For tester-enabled profiles, an independent Pi tester invocation starts concurrently with implementation. It receives the planner's flow contract rather than the worker's code and returns a bounded declarative suite. The controller validates flow coverage, case kinds, selectors, app-relative URLs and the presence of browser assertions. It saves the suite outside the generated application source. The tester has its own optional model setting and shares the job's atomically reserved model-call budget.
+The controller validates flow coverage, case kinds, selectors, app-relative URLs and the presence of browser assertions. The suite is saved outside the generated application source. The tester has its own optional model setting and shares the job's atomically reserved model-call budget.
 
-Supported cases currently include HTTP methods with JSON bodies, expected status and optional exact JSON response assertions; and browser navigation, fill, click, visible/text assertions. API requests use the locally launched application URL and do not follow redirects. Browser HTTP requests are restricted to that app origin; service workers and WebSockets are blocked during testing. Arbitrary generated test JavaScript is not executed by this acceptance runner.
+Once worker changes pass review and the configured build steps and operator checks succeed, the verifier starts the application using administrator-configured `serve_argv`, waits for the readiness endpoint, executes the API and Playwright cases, records a report and screenshots, and terminates the app process group. Failure blocks artifact publication. The dashboard shows tester preparation, readiness wait, execution, result and evidence.
 
-Once worker changes pass code review and configured build steps succeed, the verifier starts the application using administrator-configured `serve_argv`. It waits for the configured readiness endpoint, executes API and Playwright browser cases, records a report and screenshots, and terminates the app process group. Failure blocks artifact publication. The dashboard shows tester preparation, readiness wait, execution, result and evidence.
+## Supported test contract
 
-The implementation is two concurrent model invocations at most: one implementer/reviewer lane plus one tester-preparation lane. Test execution follows application readiness. This is not a general distributed multi-agent scheduler. Interrupted jobs require inspection; no background model task silently resumes after restart.
+API cases: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` with a JSON body, expected status and optional exact JSON response assertion. `HEAD` cases may not assert a body. Requests use the locally launched application URL and do not follow redirects.
+
+Browser cases must start with `goto` and may use `reload`, `fill`, `select`, `press`, `click`, `expect_text`, `expect_visible`, `expect_hidden`, `expect_count` and `expect_url`. A browser case must contain at least one assertion. Expected URLs must be app-relative. Browser HTTP requests are restricted to the app origin; service workers and WebSockets are blocked during testing. Arbitrary generated test JavaScript is not executed by this runner.
+
+A browser case fails on an uncaught page exception or a console error. Console noise caused by the runner's own aborted external requests is filtered. A case whose page has a known, reviewed console error may set `allow_console_errors: true`; prefer fixing the error.
+
+Operator-owned checks run after the build and before testing. The active Nuxt profile runs `checks/secret_scan.py`, which blocks credential-shaped values and the exact values of configured secrets from appearing in a built artifact.
 
 ## Honest limits
 
 - Test quality still depends on the approved flows and assertions. Coverage validation is structural, not proof that every requirement is tested.
+- The concurrency model is per-plan waves, not a general distributed scheduler. There is no merge queue beyond the per-wave barrier and no cross-product scheduling.
 - This version does not independently provision databases, test real SAP/Microsoft services, authenticate to external providers, generate arbitrary browser code, or automatically repair failing acceptance tests.
 - Tests must use local/mock data. The example contact endpoint validates input and does not send email.
-- Third-party calls, cross-origin authentication and WebSockets are deliberately outside the current browser runner's supported contract.
-- A native application runs under the local account and can access that account's files. Separate test files are an orchestration boundary, not an OS security boundary.
-- Live Pi and Memorix still need provider credentials and their own acceptance tests. Scripted model responses used in tests must not be described as a live AI run.
+- Third-party calls, cross-origin authentication and WebSockets are deliberately outside the browser runner's contract.
+- A native application and its workers run under the local account. The isolated `HOME` removes obvious secret paths, but this is an orchestration boundary, not an OS security boundary.
+- Live Memorix still needs provider setup and its own acceptance tests. Scripted model responses used in tests must not be described as a live AI run.
 - Binary image uploads are not part of draft import. Reusable layouts beyond the supplied starter require additional schemas/components.
+- Lint and TypeScript typecheck are not part of validation yet.
 
 ## Validation commands
 
 ```sh
 uv run pytest -q
 node --test tests/workers.test.cjs
+# Real model worker call (needs provider credentials):
+FACTORY_LIVE_WORKER=1 FACTORY_MODEL=provider/model uv run pytest tests/test_worker.py -q
 # Real Nuxt installation/build, embedded Studio editing, and API/browser retest:
 FACTORY_ALLOW_NATIVE=1 uv run python scripts/validate_studio_journey.py
 ```
@@ -91,9 +106,10 @@ The last command is an opt-in local integration journey that installs npm depend
 
 Primary capability references: [Nuxt Studio module](https://nuxt.com/modules/studio), [Studio editing documentation](https://nuxt.studio/content), [official source](https://github.com/nuxt-content/nuxt-studio). Checked 2026-11-07.
 
-## Executed validation result (2026-11-07)
+## Executed validation result
 
-- 58 Python tests passed, including actual HTTP/Chromium tests and concurrent tester preparation; 2 Docker tests skipped.
-- 8 JavaScript worker-state tests passed; lint and JavaScript syntax checks passed.
-- The real dashboard journey passed: create project, initialize Nuxt starter, clean npm installation, build, 3 API/browser cases, embedded Studio field editing, review diff, apply revision 2, rebuild, and all 3 API/browser cases again. The original artifact was retained. Desktop/mobile screenshots and a machine-readable report were saved locally under ignored `data/validation/`.
-- Tester model responses were scripted test doubles. Nuxt Studio, npm, application servers, HTTP requests and Chromium interactions were real. Live OMP and Memorix remain unverified.
+**2026-11-07 (before workers became parallel).** 58 Python tests passed, 2 Docker tests skipped; 8 JavaScript worker-state tests passed. The real dashboard journey passed: create project, initialize Nuxt starter, clean npm installation, build, 3 API/browser cases, embedded Studio field editing, review diff, apply revision 2, rebuild, and all 3 API/browser cases again, with the original artifact retained. Tester model responses were scripted test doubles.
+
+**2026-11-08 (parallel worker lane).** 114 Python tests passed, 3 skipped. Live runs with `opencode-go/deepseek-v4.1-flash`: two concurrent workers merged a product in 6.8s; a full pipeline passed build, secret scan, API and browser cases; a fixer resolved a real merge conflict in 3 of 3 runs. A Studio regression where applied drafts never reached the product source was found and fixed, now covered by tests.
+
+**Not yet re-validated:** the full Nuxt Studio journey with parallel workers. The starter path is covered by a test that uses a stand-in build command rather than a real `npm ci` + `nuxt build`. Treat the 2026-11-07 journey result as historical until it is re-run.
