@@ -138,3 +138,37 @@ def test_studio_edit_reaches_the_product_and_is_verified(settings, store, projec
     assert json.loads(product.read_text())["title"] == "After", "the edit must reach the product branch"
     kinds = [e["kind"] for e in store.all("SELECT kind FROM events WHERE project_id=?", (project["id"],))]
     assert "studio.imported" in kinds
+
+
+def test_starter_journey_lands_content_in_the_product(settings, store, project, monkeypatch):
+    """The documented starter journey: create starter -> verify -> product holds the content.
+
+    This is the editor path the operator actually uses, so it must be covered end to end
+    rather than only at the draft level.
+    """
+    from factory.engine import Engine
+
+    monkeypatch.setenv("FACTORY_ALLOW_NATIVE", "1")
+    settings.profiles["nuxt-studio"] = Profile(
+        runner="native", studio=True, artifact_dir="dist",
+        commands=[["python3", "-c", "import pathlib;pathlib.Path('dist').mkdir(exist_ok=True);"
+                                    "pathlib.Path('dist/index.html').write_text('<title>Built</title>')"]])
+    from factory.models import ProjectInput
+    # A starter may only initialise a brand-new project, so create one for this journey.
+    fresh = store.create_project(ProjectInput(name="Starter journey", brief="Create an editable site with Studio content.",
+                                              profile="nuxt-studio"))
+    project = fresh
+    studio = Studio(settings, store)
+    studio.starter(project["id"])
+    draft = store.project(project["id"])["pending_edit"]
+    assert draft, "creating a starter must open a draft, not publish directly"
+    assert (settings.data / "edits" / draft / "source" / "content" / "site.json").is_file()
+
+    Engine(settings, store).process(store.claim())
+
+    row = store.project(project["id"])
+    assert row["state"] == "ready"
+    assert row["artifact"]
+    product = settings.data / "products" / project["id"]
+    assert (product / "content" / "site.json").is_file(), "starter content must reach the product branch"
+    assert (product / "nuxt.config.ts").is_file()
