@@ -3,7 +3,33 @@ import os
 import tempfile
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from .process import run
+
+
+def assistant_json(output: str) -> tuple[str, list[str]]:
+    """Extract the final assistant text from a Pi JSON event stream."""
+    text_parts: list[str] = []
+    problems: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        message = event.get("message")
+        if event.get("type") == "message_end" and isinstance(message, dict) and message.get("role") == "assistant":
+            blocks = [b for b in message.get("content", []) if isinstance(b, dict) and b.get("type") == "text"]
+            text = "".join(b.get("text", "") for b in blocks).strip()
+            if text:
+                text_parts.append(text)
+        elif "errorMessage" in event:
+            problems.append(str(event["errorMessage"])[:500])
+    return (text_parts[-1] if text_parts else ""), problems
+
 
 # Credentials are passed to the trusted model-worker process only. Generated applications never receive them.
 PROVIDER_ENV = (
@@ -49,15 +75,107 @@ class PiAgent:
             # One print-mode invocation: one call, no tools, no session persistence,
             # no project trust. Budgets are reserved transactionally by the engine,
             # not by the CLI process.
-            argv = [settings.omp, "--print", "--mode", "text", "--model", model,
+            argv = [settings.omp, "--print", "--mode", "json", "--model", model,
                     "--no-tools", "--no-extensions", "--no-skills", "--no-mcp",
                     "--no-prompt-templates", "--no-themes", "--no-context-files",
                     "--no-session", "--no-approve"]
             output = run(argv, cwd=work, env=env, input_data=prompt.encode(),
-                         timeout=settings.agent_timeout + 15, cancelled=cancelled).strip()
-            # Be tolerant of a single markdown fence, not arbitrary embedded JSON or trailing prose.
-            if output.startswith("```json\n") and output.endswith("```"):
-                output = output[8:-3].strip()
+                         timeout=settings.agent_timeout + 15, cancelled=cancelled)
+            output, problems = assistant_json(output)
+            # Be tolerant of a single markdown fence (tagged or bare), not arbitrary embedded JSON or trailing prose.
+            if output.startswith("```"):
+                output = output[output.find("\n") + 1:] if "\n" in output else ""
+                if output.endswith("```"):
+                    output = output[:-3].strip()
             if not output:
-                raise ValueError("Model returned no text")
-            return schema.model_validate_json(output)
+                error = ValueError("Model returned no text" + (": " + problems[-1] if problems else ""))
+                error.output = output if output else "empty"
+                raise error
+            try:
+                return schema.model_validate_json(output)
+            except ValidationError as exc:
+                error = ValueError("Model response did not match the required JSON schema")
+                error.output = output[-100000:]
+                raise error from exc
+
+
+# The harness may read these to reach its own package, but never the operator's data.
+ISOLATED_HOME_EXTRA = ("TERM", "SHELL", "TMPDIR", "LANG", "LC_ALL", "CI")
+
+# Variables a worker must never see: factory credentials and the operator's git identity.
+WITHHELD = ("FACTORY_OPERATOR_TOKEN", "FACTORY_RELEASE_TOKEN", "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
+
+
+class PiWorkerError(RuntimeError):
+    def __init__(self, message, output=""):
+        super().__init__(message)
+        self.output = output
+
+
+class PiWorker:
+    """Pi as a real coding harness, confined to one worktree and one isolated HOME.
+
+    Unlike ``PiAgent`` this keeps tools enabled: the worker reads, runs and edits files
+    itself. Isolation is the point. ``HOME`` points at a per-worker temporary directory
+    so ``~/.ssh``, ``~/.aws`` and any other operator secret is unreachable, and the
+    factory's own tokens are removed from the environment even if they were exported.
+
+    Provider credentials still reach the process because the model call needs them.
+    That is a known, accepted exposure for native execution: a worker that can run
+    ``env`` can observe the provider key. Recorded in the handoff.
+    """
+
+    def __init__(self, settings):
+        self.settings = settings
+
+    def isolated_home(self, parent: Path) -> Path:
+        home = parent / "home"
+        home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (home / ".pi").mkdir(exist_ok=True, mode=0o700)
+        return home
+
+    def worker_env(self, home: Path) -> dict:
+        allowed = (*BASE_ENV, *PROVIDER_ENV, *ISOLATED_HOME_EXTRA)
+        env = {k: os.environ[k] for k in allowed if k in os.environ and k not in WITHHELD}
+        env["HOME"] = str(home)
+        env["PI_CODING_AGENT_DIR"] = str(home / ".pi" / "agent")
+        env["XDG_CONFIG_HOME"] = str(home / ".config")
+        env["XDG_CACHE_HOME"] = str(home / ".cache")
+        env["XDG_DATA_HOME"] = str(home / ".local" / "share")
+        env["PI_TELEMETRY_DISABLED"] = "1"
+        env["NPM_CONFIG_UPDATE_NOTIFIER"] = "false"
+        for name in WITHHELD:
+            env.pop(name, None)
+        return env
+
+    def run_task(self, worktree: Path, instruction: str, model: str = "", timeout: int = 0,
+                 cancelled=lambda: False) -> str:
+        """Run one worker against its worktree. Returns the harness transcript tail.
+
+        The worker is expected to change files itself; the controller commits and diffs
+        afterwards, so nothing the worker says is trusted as a description of its work.
+        """
+        settings = self.settings
+        selected = model or settings.model
+        if not selected:
+            raise ValueError("FACTORY_MODEL must select an exact provider/model")
+        runtime = settings.data / "agent-runtime"
+        runtime.mkdir(exist_ok=True, mode=0o700)
+        with tempfile.TemporaryDirectory(dir=runtime) as directory:
+            home = self.isolated_home(Path(directory))
+            env = self.worker_env(home)
+            argv = [settings.omp, "--print", "--mode", "json", "--model", selected,
+                    "--no-extensions", "--no-skills", "--no-mcp",
+                    "--no-prompt-templates", "--no-themes", "--no-context-files",
+                    "--no-session"]
+            try:
+                output = run(argv, cwd=worktree, env=env, input_data=instruction.encode(),
+                             timeout=timeout or settings.agent_timeout, cancelled=cancelled)
+            except RuntimeError as exc:
+                raise PiWorkerError(str(exc), getattr(exc, "output", "")) from exc
+            text, problems = assistant_json(output)
+            if problems and not text:
+                raise PiWorkerError("Worker produced no result: " + problems[-1], output[-20000:])
+            return output[-100000:]
+
