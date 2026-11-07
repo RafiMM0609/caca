@@ -109,7 +109,7 @@ def worktree_add(root: Path, destination: Path, branch: str) -> Path:
 
 
 def worktree_remove(root: Path, destination: Path):
-    # Best effort: a stale worktree must not fail the job that is cleaning up.
+    """Best effort: a stale worktree must not fail the job that is cleaning up."""
     try:
         _run(["worktree", "remove", "--force", str(destination)], cwd=root)
     except GitError:
@@ -121,10 +121,27 @@ def worktree_remove(root: Path, destination: Path):
 
 
 def branch_delete(root: Path, branch: str):
+    """Best effort: deleting a branch that never existed is not an error."""
     try:
         _run(["branch", "-D", branch], cwd=root)
     except GitError:
         pass
+
+
+def detached_worktree(root: Path, destination: Path, ref: str = "main") -> Path:
+    """A worktree not attached to a branch, used by the conflict fixer.
+
+    The fixer must produce the resolved target itself, so it cannot own a branch that
+    would need a second merge.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _run(["worktree", "add", "-q", "--detach", str(destination), ref], cwd=root)
+    return destination
+
+
+def fast_forward(root: Path, commit: str):
+    """Advance the target to a commit that already contains its history."""
+    _run(["merge", "--ff-only", commit], cwd=root)
 
 
 def commit_all(worktree: Path, message: str) -> str:
@@ -199,3 +216,24 @@ def list_worktrees(root: Path) -> list[dict]:
     if current:
         entries.append(current)
     return entries
+
+
+def export_tree(root: Path, destination: Path) -> Path:
+    """Copy the tracked files of the target branch into a plain directory.
+
+    The verifier expects a normal source tree, and it must never receive the git
+    metadata or any leftover worktree state.
+    """
+    import shutil
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    listing = _run(["ls-tree", "-r", "--name-only", "HEAD"], cwd=root, timeout=60)
+    for name in [line for line in listing.splitlines() if line.strip()]:
+        source = root / name
+        if not source.is_file() or source.is_symlink():
+            continue
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    return destination

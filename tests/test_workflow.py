@@ -26,6 +26,27 @@ class ScriptedAgent:
         return Review(approved=True, findings=[])
 
 
+class ScriptedWorker:
+    """Stand-in for the Pi harness: writes real files into its worktree.
+
+    The engine no longer asks a model for whole-file JSON; a worker edits its tree, so
+    the double must edit the tree too. Still a test double, never a live model.
+    """
+    def __init__(self, files=None):
+        self.files = files or {"index.html": "<!doctype html><html lang='en'><head><title>Portfolio</title></head>"
+                                           "<body><h1>Ada</h1><p>ada@example.test</p></body></html>"}
+        self.calls = 0
+
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        self.calls += 1
+        for name, content in self.files.items():
+            target = worktree / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Unique per call so a second worker is not silently a no-op change.
+            target.write_text(content + f"<!-- worker call {self.calls} -->\n")
+        return "scripted worker transcript"
+
+
 class TestVerifier:
     __test__ = False
 
@@ -79,31 +100,49 @@ def test_build_repairs_then_publishes_evidence(settings, store, project, plan):
     agent = ScriptedAgent(plan, reject=1)
     build_job(store, project)
     job = store.claim()
-    Engine(settings, store, agent, TestVerifier()).process(job)
+    Engine(settings, store, agent, TestVerifier(), worker=ScriptedWorker()).process(job)
+    workers = store.workers_for(job["id"])
     result = store.project(project["id"])
     assert result["state"] == "ready"
     artifact = json.loads(result["artifact"])
     assert len(artifact["digest"]) == 64
     assert (settings.data / "jobs" / job["id"] / "artifact.tar.gz").is_file()
-    assert agent.calls == ["implementer", "review", "implementer", "review"]
-    assert store.one("SELECT * FROM jobs WHERE id=?", (job["id"],))["reserved_usd"] == 8
+    # One worker ran per repair attempt, and each attempt was reviewed.
+    assert agent.calls.count("review") == 2
+    assert workers[0]["state"] == "merged"
+    # Two reviewer calls at $2 each. Workers are harness processes, not budgeted JSON calls.
+    assert store.one("SELECT * FROM jobs WHERE id=?", (job["id"],))["reserved_usd"] == 4
 
 
 def test_review_failure_never_produces_artifact(settings, store, project, plan):
     build_job(store, project)
     job = store.claim()
-    Engine(settings, store, ScriptedAgent(plan, reject=10), TestVerifier()).process(job)
+    Engine(settings, store, ScriptedAgent(plan, reject=10), TestVerifier(), worker=ScriptedWorker()).process(job)
     assert store.project(project["id"])["artifact"] is None
     assert store.project(project["id"])["state"] == "failed"
 
 
-def test_budget_stops_new_model_calls(settings, store, project, plan):
+def test_budget_stops_reviews_and_blocks_publication(settings, store, project, plan):
+    """Two tasks need two reviews; a $2 job budget only pays for one.
+
+    The second review cannot be reserved, so the wave fails and nothing is published.
+    """
     settings.max_job_cost = 2
+    from factory.models import Task
+    plan.tasks = [
+        Task(id="one", title="First part", instructions="Build the first part of the site.",
+             acceptance=["works"], depends_on=[]),
+        Task(id="two", title="Second part", instructions="Build the second part of the site.",
+             acceptance=["works"], depends_on=["one"]),
+    ]
+    with store.tx() as db:
+        db.execute("UPDATE projects SET plan=? WHERE id=?", (plan.model_dump_json(), project["id"]))
     agent = ScriptedAgent(plan)
     build_job(store, project)
-    Engine(settings, store, agent, TestVerifier()).process(store.claim())
-    assert agent.calls == ["implementer"]
+    Engine(settings, store, agent, TestVerifier(), worker=ScriptedWorker()).process(store.claim())
+    assert agent.calls.count("review") == 1, "only one review fits the budget"
     assert store.project(project["id"])["artifact"] is None
+    assert store.project(project["id"])["state"] == "failed"
 
 
 def test_verifier_failure_never_produces_release(settings, store, project, plan):
@@ -111,14 +150,14 @@ def test_verifier_failure_never_produces_release(settings, store, project, plan)
         def verify(self, *args):
             raise RuntimeError("test failure")
     build_job(store, project)
-    Engine(settings, store, ScriptedAgent(plan), FailedVerifier()).process(store.claim())
+    Engine(settings, store, ScriptedAgent(plan), FailedVerifier(), worker=ScriptedWorker()).process(store.claim())
     assert store.project(project["id"])["state"] == "failed"
     assert store.project(project["id"])["artifact"] is None
 
 
 def test_planner_requires_human_approval(settings, store, project, plan):
     store.enqueue(project["id"], "plan", next_state="planning")
-    Engine(settings, store, ScriptedAgent(plan), TestVerifier()).process(store.claim())
+    Engine(settings, store, ScriptedAgent(plan), TestVerifier(), worker=ScriptedWorker()).process(store.claim())
     result = store.project(project["id"])
     assert result["state"] == "awaiting_plan"
     assert result["revision"] == 2

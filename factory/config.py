@@ -20,6 +20,8 @@ class Settings:
     agent_timeout: int = 600
     max_repairs: int = 2
     memorix: str = ""
+    # How many Pi harness workers may run at once. Each is a separate process tree.
+    worker_concurrency: int = 3
     profiles: dict[str, Profile] = field(default_factory=dict)
     targets: dict[str, Target] = field(default_factory=dict)
 
@@ -40,6 +42,7 @@ class Settings:
             max_job_cost=float(os.environ.get("FACTORY_MAX_JOB_COST", "20")),
             agent_timeout=int(os.environ.get("FACTORY_AGENT_TIMEOUT", "600")),
             memorix=os.environ.get("FACTORY_MEMORIX", ""),
+            worker_concurrency=int(os.environ.get("FACTORY_WORKER_CONCURRENCY", "3")),
             profiles={k: Profile.model_validate(v) for k, v in raw.get("profiles", {}).items()},
             targets={k: Target.model_validate(v) for k, v in raw.get("targets", {}).items()},
         )
@@ -51,6 +54,8 @@ class Settings:
             raise ValueError("Operator and release tokens must be distinct")
         if not 0 < self.max_cost <= 100 or not 10 <= self.agent_timeout <= 7200:
             raise ValueError("Invalid agent cost/time budget")
+        if not 1 <= self.worker_concurrency <= 16:
+            raise ValueError("Worker concurrency must be between 1 and 16")
         if not self.max_cost <= self.max_job_cost <= 1000:
             raise ValueError("Job cost budget must cover at least one model invocation")
         self.data.mkdir(parents=True, exist_ok=True, mode=0o700)

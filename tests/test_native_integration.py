@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import shutil
 
 import pytest
@@ -6,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from factory.api import create_app
 from factory.engine import Engine
-from factory.models import Change, Profile, Review
+from factory.models import Profile, Review
 
 pytestmark = pytest.mark.skipif(not shutil.which('npm'), reason='Node/npm required')
 
@@ -16,20 +17,33 @@ class NodeAgent:
         self.broken = broken
         self.sources = []
 
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        """Harness double: writes the fixture application into its worktree."""
+        package = {'name': 'integration-fixture', 'version': '1.0.0', 'private': True,
+                   'scripts': {'test:integration': 'node --test integration.cjs', 'build': 'node build.cjs'}}
+        # Record the files already present, proving the worker inherits prior work.
+        self.sources.append(sorted(p.name for p in Path(worktree).iterdir() if p.is_file()))
+        files = self.application(package)
+        for name, content in files.items():
+            target = worktree / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+        return 'scripted harness worker'
+
     def generate(self, role, instruction, context, schema, cancelled):
         if role == 'review':
             return Review(approved=True, findings=[])
-        self.sources.append(context['files'])
-        package = {'name': 'integration-fixture', 'version': '1.0.0', 'private': True,
-                   'scripts': {'test:integration': 'node --test integration.cjs', 'build': 'node build.cjs'}}
-        return Change(summary='Create testable local Node application', files={
+        raise AssertionError('the engine must not request whole-file JSON from the implementer')
+
+    def application(self, package):
+        return {
             'package.json': json.dumps(package),
             'package-lock.json': json.dumps({'name':package['name'], 'version':'1.0.0', 'lockfileVersion':3,
                                             'packages':{'':{'name':package['name'],'version':'1.0.0'}}}),
             'server.cjs': "module.exports = require('node:http').createServer((req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ok:true}));});",
             'integration.cjs': "const {test}=require('node:test');const assert=require('node:assert/strict');const server=require('./server.cjs');test('HTTP JSON contract',async()=>{await new Promise(r=>server.listen(0,'127.0.0.1',r));try{const response=await fetch('http://127.0.0.1:'+server.address().port);assert.equal(response.status,200);assert.deepEqual(await response.json(),{ok:" + ('false' if self.broken else 'true') + "});}finally{await new Promise(r=>server.close(r));}});",
             'build.cjs': "const fs=require('node:fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/index.html','<title>Verified build</title>');"
-        })
+        }
 
 
 def prepare(settings, monkeypatch):
@@ -40,7 +54,7 @@ def prepare(settings, monkeypatch):
 def test_native_api_build_edit_rebuild(settings, store, project, plan, monkeypatch):
     prepare(settings, monkeypatch)
     agent = NodeAgent()
-    engine = Engine(settings, store, agent=agent)
+    engine = Engine(settings, store, agent=agent, worker=agent)
     with TestClient(create_app(settings)) as client:
         client.headers['Authorization'] = 'Bearer ' + settings.operator_token
         base = '/api/projects/' + project['id']
@@ -60,7 +74,7 @@ def test_native_api_build_edit_rebuild(settings, store, project, plan, monkeypat
         second = client.get(base).json()
         assert second['state'] == 'ready'
         assert json.loads(second['artifact'])['revision'] == 2
-        assert 'server.cjs' in agent.sources[1]
+        assert 'server.cjs' in agent.sources[1], 'the rebuild worker must start from the previous source'
         assert (settings.data / 'jobs' / first_job['id'] / 'artifact.tar.gz').exists()
         log = (settings.data / 'jobs' / second_job['id'] / 'verification.txt').read_text()
         assert 'HTTP JSON contract' in log and 'STEP 3 PASS' in log
@@ -70,7 +84,8 @@ def test_failed_integration_blocks_build(settings, store, project, monkeypatch):
     prepare(settings, monkeypatch)
     store.enqueue(project['id'], 'build', {'revision':1}, next_state='building')
     job = store.claim()
-    Engine(settings, store, agent=NodeAgent(broken=True)).process(job)
+    broken = NodeAgent(broken=True)
+    Engine(settings, store, agent=broken, worker=broken).process(job)
     assert store.project(project['id'])['state'] == 'failed'
     assert store.project(project['id'])['artifact'] is None
     assert not (settings.data / 'jobs' / job['id'] / 'artifact.tar.gz').exists()

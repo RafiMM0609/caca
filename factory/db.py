@@ -45,6 +45,13 @@ class Store:
                 CREATE TABLE IF NOT EXISTS studio_drafts(
                   id TEXT PRIMARY KEY, project_id TEXT NOT NULL UNIQUE REFERENCES projects(id),
                   base_job TEXT NOT NULL, revision INTEGER NOT NULL, state TEXT NOT NULL, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS workers(
+                  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                  job_id TEXT NOT NULL, task_id TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued',
+                  branch TEXT NOT NULL, worktree TEXT, base_commit TEXT, commit_sha TEXT,
+                  depends_on TEXT NOT NULL DEFAULT '[]', attempts INTEGER NOT NULL DEFAULT 0,
+                  detail TEXT NOT NULL DEFAULT '{}', created REAL NOT NULL, started REAL, finished REAL);
+                CREATE INDEX IF NOT EXISTS workers_by_job ON workers(job_id, task_id);
             """)
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -201,6 +208,57 @@ class Store:
             db.execute("INSERT OR REPLACE INTO runtime VALUES(?,?)", (lane + "_heartbeat", str(now)))
             if job:
                 db.execute("UPDATE jobs SET heartbeat=? WHERE id=? AND state='running'", (now, job))
+
+    # --- workers ---------------------------------------------------------------------
+    # A worker is one Pi harness invocation for one plan task in its own worktree.
+    # These rows are what makes "the planner assigned work to workers" observable.
+
+    def create_worker(self, project, job, task_id, branch, base_commit, depends_on=(), worktree=None):
+        worker_id = uid()
+        with self.tx() as db:
+            db.execute("INSERT INTO workers(id,project_id,job_id,task_id,branch,worktree,base_commit,"
+                       "depends_on,created) VALUES(?,?,?,?,?,?,?,?,?)",
+                       (worker_id, project, job, task_id, branch, str(worktree) if worktree else None,
+                        base_commit, json.dumps(list(depends_on)), time.time()))
+            self.event_tx(db, project, job, "worker.created",
+                          {"worker": worker_id, "task": task_id, "branch": branch})
+        return self.one("SELECT * FROM workers WHERE id=?", (worker_id,))
+
+    def worker(self, worker_id):
+        return self.one("SELECT * FROM workers WHERE id=?", (worker_id,))
+
+    def workers_for(self, job):
+        return self.all("SELECT * FROM workers WHERE job_id=? ORDER BY created", (job,))
+
+    def set_worker(self, worker_id, **fields):
+        if not fields:
+            return
+        allowed = {"state", "worktree", "commit_sha", "attempts", "detail", "started", "finished"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"Unknown worker fields: {', '.join(sorted(unknown))}")
+        payload = dict(fields)
+        if "detail" in payload and not isinstance(payload["detail"], str):
+            payload["detail"] = json.dumps(payload["detail"])
+        # Paths arrive as Path objects; sqlite only binds str/int/float/bytes/None.
+        for name in ("worktree", "commit_sha", "state"):
+            if name in payload and payload[name] is not None:
+                payload[name] = str(payload[name])
+        assignments = ", ".join(f"{name}=?" for name in payload)
+        with self.tx() as db:
+            db.execute(f"UPDATE workers SET {assignments} WHERE id=?",
+                       (*payload.values(), worker_id))
+
+    def worker_event(self, project, job, kind, detail):
+        self.event(project, job, kind, detail)
+
+    def worker_states(self, job):
+        rows = self.all("SELECT task_id, state FROM workers WHERE job_id=?", (job,))
+        return {row["task_id"]: row["state"] for row in rows}
+
+    def completed_tasks(self, job):
+        rows = self.all("SELECT task_id FROM workers WHERE job_id=? AND state='merged'", (job,))
+        return {row["task_id"] for row in rows}
 
     def backup(self, destination):
         with self.connect() as source, sqlite3.connect(destination) as dest:

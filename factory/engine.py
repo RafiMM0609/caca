@@ -2,7 +2,6 @@ from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import json
 import logging
-import shutil
 import signal
 import threading
 import time
@@ -11,23 +10,26 @@ from .agents import PiAgent
 from .db import Store, uid
 from .deploy import Deployer
 from .memory import Memory
-from .models import Change, Plan, Review
+from .models import Plan, Review
+from .parallel import WORKER_BRIEF, ParallelBuilder
+from . import products
 from .testing import TestSuite
 from .process import Cancelled
 from .verifier import Verifier
-from .workspace import apply, atomic_json, clone_tree, package, snapshot
+from .workspace import atomic_json, package
 
 logger = logging.getLogger(__name__)
 
 
 class Engine:
-    def __init__(self, settings, store=None, agent=None, verifier=None, memory=None, deployer=None):
+    def __init__(self, settings, store=None, agent=None, verifier=None, memory=None, deployer=None, worker=None):
         self.settings = settings
         self.store = store or Store(settings.data / "factory.sqlite3")
         self.agent = agent or PiAgent(settings)
         self.verifier = verifier or Verifier()
         self.memory = memory or Memory(settings)
         self.deployer = deployer or Deployer()
+        self.parallel = ParallelBuilder(settings, self.store, worker=worker)
         self.stop = threading.Event()
 
     def memory_operation(self, project, job, method, *args):
@@ -99,22 +101,52 @@ class Engine:
             done.set()
             pulse.join(timeout=5)
 
+    def _spacing(self, cancelled, seconds=30):
+        for _ in range(max(1, seconds // 3)):
+            if cancelled():
+                raise Cancelled("Cancelled while spacing retry")
+            time.sleep(3)
+
     def prepare_tests(self, project, job, work, plan, cancelled):
         self.store.event(project["id"], job["id"], "tester.preparing", {})
-        try:
-            suite = self.generate(job["id"], "tester",
-                                  "Prepare independent executable API and browser acceptance cases for every planner flow. "
-                                  "Use only the contract in the plan, not implementation code. Include real assertions. "
-                                  "Use CSS selectors and relative paths only. Do not weaken expected behavior.",
-                                  {"brief": project["brief"], "flows": [f.model_dump() for f in plan.test_flows]},
-                                  TestSuite, cancelled)
-            suite.validate_coverage(plan.test_flows)
-            atomic_json(work / "test-suite.json", suite.model_dump())
-            self.store.event(project["id"], job["id"], "tester.prepared", {"cases": len(suite.cases)})
-            return suite
-        except BaseException:
-            self.store.event(project["id"], job["id"], "tester.failed", {"stage": "preparation"})
-            raise
+        instruction = (
+            "Prepare independent executable API and browser acceptance cases for every planner flow. "
+            "Create exactly one case per flow: copy each flow's id into case.flow_id and its kind "
+            "into case.kind; do not invent, rename or omit flow ids. "
+            "Use only the contract in the plan, not implementation code. Include real assertions. "
+            "Use CSS selectors and relative paths only. Do not weaken expected behavior.")
+        flows = [f.model_dump() for f in plan.test_flows]
+        suite = None
+        for attempt in range(self.settings.max_repairs + 1):
+            if cancelled():
+                raise Cancelled("Cancelled while preparing tests")
+            context = {"brief": project["brief"], "flows": flows}
+            if attempt:
+                # Wait between attempts instead of re-hitting the provider rapidly.
+                for _ in range(20):
+                    if cancelled():
+                        raise Cancelled("Cancelled while preparing tests")
+                    time.sleep(3)
+                context["previous_attempt_note"] = \
+                    "A previous response was rejected by structural validation. Re-check flow ids and kinds."
+            try:
+                suite = self.generate(job["id"], "tester", instruction, context, TestSuite, cancelled)
+                suite.validate_coverage(plan.test_flows)
+            except Cancelled:
+                raise
+            except Exception as exc:
+                detail = str(getattr(exc, "output", "") or exc)
+                (work / f"tester-prep-attempt-{attempt}.txt").write_text(detail[-100000:])
+                self.store.event(project["id"], job["id"],
+                                 "tester.prep_attempt_failed", {"attempt": attempt + 1, "reason": type(exc).__name__})
+                suite = None
+            else:
+                break
+        if suite is None:
+            raise ValueError("Tester preparation failed after bounded attempts; inspect prep evidence")
+        atomic_json(work / "test-suite.json", suite.model_dump())
+        self.store.event(project["id"], job["id"], "tester.prepared", {"cases": len(suite.cases)})
+        return suite
 
     def build(self, project, job, work, cancelled, verification_only=False):
         profile = self.settings.profiles[project["profile"]]
@@ -140,55 +172,48 @@ class Engine:
         payload = json.loads(job["payload"])
         if payload["revision"] != project["revision"] or plan.questions:
             raise ValueError("Plan approval is stale or unresolved")
-        source = work / "source"
-        previous = json.loads(project["artifact"] or "null")
-        if project.get("pending_edit"):
-            clone_tree(self.settings.data / "edits" / project["pending_edit"] / "source", source)
-        elif previous:
-            clone_tree(self.settings.data / "jobs" / previous["job_id"] / "source", source)
-        else:
-            source.mkdir()
+        root = products.ensure_repo(self.settings.data, project["id"])
+        products.checkout_target(root)
         memory = self.memory_operation(project["id"], job["id"], "search", plan.summary)
-        for task in ([] if verification_only else plan.tasks):
-            if cancelled():
-                raise Cancelled("Cancelled between tasks")
-            self.store.event(project["id"], job["id"], "task.running", {"task": task.id, "title": task.title})
-            context = {"brief": project["brief"], "plan": plan.model_dump(), "task": task.model_dump(),
-                       "files": snapshot(source), "memory": memory,
-                       "verification": profile.model_dump(exclude={"checks_dir"})}
-            feedback = []
-            candidate = work / (task.id + "-candidate")
-            accepted = False
-            for attempt in range(self.settings.max_repairs + 1):
-                if cancelled():
-                    raise Cancelled("Cancelled during task")
-                if candidate.exists():
-                    shutil.rmtree(candidate)
-                clone_tree(source, candidate)
-                store.event(project["id"], job["id"], "task.implementing", {"task": task.id, "attempt": attempt + 1})
-                change = self.generate(job["id"], "implementer", "Implement this task. Return complete UTF-8 file contents "
-                                             "for changed files and explicit deletions. No placeholders. "
-                                             "Verification commands and production credentials are outside your control.",
-                                             {**context, "review_feedback": feedback}, Change, cancelled)
-                apply(candidate, change)
-                atomic_json(work / f"{task.id}-{attempt}-change.json", change.model_dump())
-                store.event(project["id"], job["id"], "task.reviewing", {"task": task.id, "attempt": attempt + 1})
-                review = self.generate(job["id"], "review", "Independently review correctness, acceptance criteria and "
-                                             "security. Inspect the actual files. Reject incomplete or unsafe changes. "
-                                             "You cannot certify test execution; the verifier does that separately.",
-                                             {**context, "candidate": snapshot(candidate)}, Review, cancelled)
-                atomic_json(work / f"{task.id}-{attempt}-review.json", review.model_dump())
-                store.event(project["id"], job["id"], "task.reviewed",
-                            {"task": task.id, "attempt": attempt + 1, **review.model_dump()})
-                if review.approved:
-                    shutil.rmtree(source)
-                    candidate.rename(source)
-                    accepted = True
-                    break
-                feedback = review.findings
-            if not accepted:
-                raise ValueError("Review failed after bounded repair attempts")
-            store.event(project["id"], job["id"], "task.accepted", {"task": task.id})
+
+        def instructions_for(task, base_context):
+            # The worker reads the real files itself, so it gets the task contract and the
+            # product brief rather than a full source dump.
+            return (
+                WORKER_BRIEF
+                + "\n\nPRODUCT BRIEF:\n" + project["brief"]
+                + "\n\nPLAN SUMMARY:\n" + plan.summary
+                + "\n\nYOUR TASK (" + task.id + "): " + task.title
+                + "\n" + task.instructions
+                + "\n\nACCEPTANCE CRITERIA:\n" + "\n".join("- " + item for item in task.acceptance)
+                + ("\n\nOTHER TASKS IN THE PLAN:\n" + "\n".join(
+                    "- " + other.id + ": " + other.title for other in plan.tasks if other.id != task.id)
+                   if len(plan.tasks) > 1 else "")
+                + ("\n\nPROJECT MEMORY (advisory):\n" + memory if memory else "")
+                + ("\n\nPREVIOUS ATTEMPT FEEDBACK:\n" + base_context.get("feedback", "")
+                   if base_context.get("feedback") else "")
+            )
+
+        def review_for(task, worktree, diff, base):
+            # Review sees the diff, not the worker's own description of its work.
+            verdict = self.generate(job["id"], "review",
+                                    "Independently review this diff against the task acceptance criteria and "
+                                    "security. You see only the change. Reject incomplete, unsafe or "
+                                    "unrelated edits. You cannot certify test execution; the verifier does that.",
+                                    {"brief": project["brief"], "task": task.model_dump(),
+                                     "diff": diff or "(no file changes)"}, Review, cancelled)
+            atomic_json(work / f"{task.id}-review.json", verdict.model_dump())
+            return verdict.model_dump()
+
+        workers_used = []
+        if not verification_only:
+            outcomes = self.parallel.build_tasks(project, job, plan, instructions_for, cancelled, review_for)
+            workers_used = [outcome.as_dict() for outcome in outcomes]
+            atomic_json(work / "workers.json", workers_used)
+            source = products.export_tree(root, work / "source")
+        else:
+            source = products.export_tree(root, work / "source")
+
         store.event(project["id"], job["id"], "verification.running", {})
         output = work / "output"
         suite = tester_future.result() if tester_future else None

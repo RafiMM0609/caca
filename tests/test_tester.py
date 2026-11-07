@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from factory.engine import Engine
-from factory.models import AcceptanceFlow, Change, Profile, Review
+from factory.models import AcceptanceFlow, Profile, Review
 from factory.testing import TestAction as Action, TestSuite as Suite, run_suite
 from factory.local_app import LocalApp
 
@@ -42,16 +42,21 @@ class ParallelAgent:
         if role == 'tester':
             self.preparing.set()
             assert self.implementing.wait(5), 'Tester must overlap implementation'
-            assert 'files' not in context  # Independent planner contract, not implementation.
+            assert 'diff' not in context  # Independent planner contract, not implementation.
             return suite()
-        if role == 'review':
-            return Review(approved=True, findings=[])
+        assert role == 'review', role
+        return Review(approved=True, findings=[])
+
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        """Harness double: writes the local application into its worktree."""
         assert self.preparing.wait(5), 'Worker must overlap tester preparation'
         self.implementing.set()
-        return Change(summary='Build a real local application', files={
-            'server.cjs':SERVER,
-            'build.cjs':"const fs=require('node:fs');fs.mkdirSync('dist');fs.writeFileSync('dist/index.html','<title>Built</title>');"
-        })
+        for name, content in {
+            'server.cjs': SERVER,
+            'build.cjs': "const fs=require('node:fs');fs.mkdirSync('dist');fs.writeFileSync('dist/index.html','<title>Built</title>');",
+        }.items():
+            (worktree / name).write_text(content)
+        return 'scripted harness worker' 
 
 
 def browser_env(monkeypatch):
@@ -70,7 +75,8 @@ def test_parallel_preparation_then_real_api_browser(settings, store, project, pl
         db.execute('UPDATE projects SET plan=? WHERE id=?',(plan.model_dump_json(),project['id']))
     store.enqueue(project['id'], 'build', {'revision':1}, next_state='building')
     job=store.claim()
-    Engine(settings, store, agent=ParallelAgent()).process(job)
+    agent = ParallelAgent()
+    Engine(settings, store, agent=agent, worker=agent).process(job)
     assert store.project(project['id'])['state']=='ready'
     evidence=settings.data/'jobs'/job['id']/'testing'
     report=json.loads((evidence/'report.json').read_text())

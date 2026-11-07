@@ -1,0 +1,207 @@
+"""Parallel worker waves and the merge barrier.
+
+A fake harness stands in for Pi so these tests are deterministic and offline. It writes
+files and can be told to sleep, so overlap and the merge barrier are observable rather
+than assumed.
+"""
+import threading
+import time
+
+import pytest
+
+from factory import products
+from factory.db import Store
+from factory.models import Plan, ProjectInput
+from factory.parallel import ParallelBuilder
+
+
+def task(name, deps=None):
+    return {"id": name, "title": f"Task {name}", "instructions": f"Implement the {name} part.",
+            "acceptance": ["works"], "depends_on": deps or []}
+
+
+class FakeWorker:
+    """Stands in for PiWorker. Records concurrency and writes a file per task."""
+
+    def __init__(self, sleep=0.0, conflict_on=None, shared_file=False):
+        self.sleep = sleep
+        self.conflict_on = conflict_on
+        self.shared_file = shared_file
+        self.active = 0
+        self.peak = 0
+        self.lock = threading.Lock()
+        self.order = []
+
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        with self.lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            same = self.shared_file or (self.conflict_on and self.conflict_on in instruction)
+            name = "shared.txt" if same else self._name(instruction)
+            # Distinct content per worker is what actually produces a merge conflict.
+            (worktree / name).write_text(f"{self._name(instruction)} wrote this\n")
+            with self.lock:
+                self.order.append(name)
+            time.sleep(self.sleep)
+            return "worker transcript"
+        finally:
+            with self.lock:
+                self.active -= 1
+
+    @staticmethod
+    def _name(instruction):
+        marker = "YOUR TASK ("
+        start = instruction.index(marker) + len(marker)
+        task_id = instruction[start:instruction.index(")", start)]
+        return f"{task_id}.txt"
+
+
+@pytest.fixture
+def env(tmp_path):
+    from factory.config import Settings
+    settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
+                        model="test/model", omp="/usr/bin/true", worker_concurrency=4)
+    store = Store(tmp_path / "factory.sqlite3")
+    project = store.create_project(ProjectInput(name="Parallel demo", brief="Build a product with several parts."))
+    return settings, store, project
+
+
+def run(env, plan, worker, review=None):
+    settings, store, project = env
+    builder = ParallelBuilder(settings, store, worker=worker)
+    job = {"id": "job-1", "payload": "{}"}
+    builder.build_tasks(project, job, plan, lambda task, ctx: f"YOUR TASK ({task.id}) do it",
+                        lambda: False, review)
+    root = products.product_root(settings.data, project["id"])
+    return root, builder
+
+
+def test_independent_tasks_run_together(env):
+    plan = Plan(summary="Two independent parts of the product.", tasks=[task("left"), task("right"),
+                                                                       task("join", ["left", "right"])])
+    worker = FakeWorker(sleep=0.3)
+    root, builder = run(env, plan, worker)
+    # left and right overlap; join waits for both, so peak concurrency is 2.
+    assert worker.peak == 2
+    assert sorted(p.name for p in root.iterdir() if p.is_file()) == ["join.txt", "left.txt", "right.txt"]
+
+
+def test_dependent_task_waits_for_its_dependency(env):
+    plan = Plan(summary="A chain where each step needs the previous.", tasks=[task("first"), task("second", ["first"])])
+    worker = FakeWorker()
+    root, builder = run(env, plan, worker)
+    assert worker.peak == 1, "a dependent task must not run alongside its dependency"
+    assert (root / "second.txt").exists()
+
+
+def test_workers_are_recorded_with_their_outcome(env):
+    plan = Plan(summary="One task that should be tracked as a worker.", tasks=[task("solo")])
+    settings, store, project = env
+    root, builder = run(env, plan, FakeWorker())
+    records = store.workers_for("job-1")
+    assert len(records) == 1
+    assert records[0]["task_id"] == "solo"
+    assert records[0]["state"] == "merged"
+    assert records[0]["branch"] == "worker/solo"
+
+
+def test_merge_barrier_runs_after_the_whole_wave(env):
+    """No task is merged while a sibling is still running."""
+    plan = Plan(summary="Two parallel parts merged only after both finish.",
+                tasks=[task("a"), task("b")])
+    settings, store, project = env
+    merged_at = []
+
+    original = products.merge_branch
+
+    def spy(root, branch, message):
+        merged_at.append((branch, len(store.workers_for("job-1")),
+                          len([r for r in store.workers_for("job-1") if r["state"] == "merged"])))
+        return original(root, branch, message)
+
+    products.merge_branch = spy
+    try:
+        worker = FakeWorker(sleep=0.2)
+        run(env, plan, worker)
+    finally:
+        products.merge_branch = original
+
+    # Both workers must already exist before the first merge happens.
+    assert merged_at, "merges should have happened"
+    assert all(count == 2 for _, count, _ in merged_at)
+    # And the first merge happens before anything is marked merged.
+    assert merged_at[0][2] == 0
+
+
+def test_conflict_is_detected_and_the_wave_recovers_on_retry(env):
+    """Two workers touching one file: the barrier detects the conflict and retries.
+
+    The retry re-runs only the unmerged task against the updated target, so the second
+    attempt integrates cleanly. This is the intended recovery, not a silent overwrite.
+    """
+    plan = Plan(summary="Two parts that both edit the same file.", tasks=[task("one"), task("two")])
+    settings, store, project = env
+
+    class NoFixer(FakeWorker):
+        def run_task(self, worktree, instruction, **kwargs):
+            if "Integration conflict" in instruction:
+                raise RuntimeError("fixer unavailable")
+            return super().run_task(worktree, instruction, **kwargs)
+
+    builder = ParallelBuilder(settings, store, worker=NoFixer(shared_file=True))
+    builder.build_tasks(project, {"id": "job-1", "payload": "{}"}, plan,
+                        lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+
+    kinds = [e["kind"] for e in store.all("SELECT kind FROM events WHERE job_id='job-1'")]
+    assert "merge.conflict" in kinds, "the barrier must record the conflict"
+    assert "fixer.spawning" in kinds, "a fixer must be attempted"
+    assert "fixer.failed" in kinds, "an unavailable fixer must be visible"
+    assert "wave.retry" in kinds, "the wave must be retried rather than abandoned"
+    states = {w["task_id"]: w["state"] for w in store.workers_for("job-1")}
+    assert states == {"one": "merged", "two": "merged"}
+
+
+def test_a_worker_that_always_fails_stops_after_bounded_attempts(env):
+    """A worker that never produces a mergeable branch must not loop forever."""
+    plan = Plan(summary="A task whose worker never succeeds.", tasks=[task("doomed")])
+    settings, store, project = env
+
+    class Broken(FakeWorker):
+        def run_task(self, worktree, instruction, **kwargs):
+            raise RuntimeError("harness unavailable")
+
+    builder = ParallelBuilder(settings, store, worker=Broken())
+    with pytest.raises(ValueError, match="failed after bounded repair attempts"):
+        builder.build_tasks(project, {"id": "job-1", "payload": "{}"}, plan,
+                            lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+    root = products.product_root(settings.data, project["id"])
+    assert not (root / "doomed.txt").exists()
+    kinds = [e["kind"] for e in store.all("SELECT kind FROM events WHERE job_id='job-1'")]
+    assert kinds.count("wave.retry") <= settings.max_repairs
+
+
+def test_rejected_review_blocks_the_merge(env):
+    """A rejected review must never reach the target branch."""
+    plan = Plan(summary="One task whose review will reject it.", tasks=[task("bad")])
+    settings, store, project = env
+    builder = ParallelBuilder(settings, store, worker=FakeWorker())
+    with pytest.raises(ValueError, match="failed after bounded repair attempts"):
+        builder.build_tasks(project, {"id": "job-1", "payload": "{}"}, plan,
+                            lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False,
+                            lambda task, worktree, diff, base: {"approved": False, "findings": ["nope"]})
+    root = products.product_root(settings.data, project["id"])
+    assert not (root / "bad.txt").exists(), "rejected work must not be merged"
+    assert all(w["state"] != "merged" for w in store.workers_for("job-1"))
+    kinds = [e["kind"] for e in store.all("SELECT kind FROM events WHERE job_id='job-1'")]
+    assert "worker.rejected" in kinds
+
+
+def test_cancellation_stops_between_waves(env):
+    from factory.process import Cancelled
+    plan = Plan(summary="A plan that is cancelled before any work starts.", tasks=[task("x")])
+    settings, store, project = env
+    builder = ParallelBuilder(settings, store, worker=FakeWorker())
+    with pytest.raises(Cancelled):
+        builder.build_tasks(project, {"id": "job-1", "payload": "{}"}, plan,
+                            lambda task, ctx: "do it", lambda: True)

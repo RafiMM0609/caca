@@ -147,7 +147,7 @@ def test_operator_check_blocks_publication_of_a_leaking_build(tmp_path, monkeypa
     """A successful build must not be publishable when it ships a credential."""
     from factory.db import Store
     from factory.engine import Engine
-    from factory.models import AcceptanceFlow, Change, ProjectInput, Review
+    from factory.models import AcceptanceFlow, ProjectInput, Review
     from factory.config import Settings
 
     server = ('const http=require("node:http");http.createServer((q,s)=>{if(q.url==="/api/health")'
@@ -167,13 +167,16 @@ def test_operator_check_blocks_publication_of_a_leaking_build(tmp_path, monkeypa
                            {"flow_id": "hero", "name": "Hero renders", "kind": "browser",
                             "actions": [{"action": "goto", "path": "/"},
                                         {"action": "expect_visible", "selector": "#h"}]}])
-            if role == "review":
-                return Review(approved=True, findings=[])
-            return Change(summary="Application that accidentally embeds a credential", files={
-                "server.cjs": server,
-                "build.cjs": ("const fs=require('node:fs');fs.mkdirSync('dist');"
-                              f"fs.writeFileSync('dist/index.html','<title>B</title><script>var k=\"{leaked}\"</script>');"),
-            })
+            assert role == "review", role
+            return Review(approved=True, findings=[])
+
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+            """Harness double whose build output embeds a credential."""
+            (worktree / "server.cjs").write_text(server)
+            (worktree / "build.cjs").write_text(
+                "const fs=require('node:fs');fs.mkdirSync('dist');"
+                f"fs.writeFileSync('dist/index.html','<title>B</title><script>var k=\"{leaked}\"</script>');")
+            return "scripted harness worker"
 
     monkeypatch.setenv("FACTORY_ALLOW_NATIVE", "1")
     executable = shutil_which_chromium()
@@ -202,7 +205,8 @@ def test_operator_check_blocks_publication_of_a_leaking_build(tmp_path, monkeypa
     store.enqueue(project["id"], "build", {"revision": 1}, next_state="building")
     job = store.claim()
     # process() records the failure rather than re-raising, so assert on durable state.
-    Engine(settings, store, agent=Agent()).process(job)
+    agent = Agent()
+    Engine(settings, store, agent=agent, worker=agent).process(job)
     assert store.one("SELECT state FROM jobs WHERE id=?", (job["id"],))["state"] == "failed"
     row = store.project(project["id"])
     assert row["state"] == "failed"
