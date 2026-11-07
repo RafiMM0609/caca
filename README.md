@@ -16,7 +16,7 @@ Native Linux test/build execution is now available with explicit `FACTORY_ALLOW_
 
 ## Run with Docker
 
-Requires Python 3.12+, uv, Git, Docker, an installed OMP 18.17.0 binary, and a model provider credential. Keep the factory on a dedicated Linux VM. Docker access grants substantial host authority; never expose its socket to generated applications.
+Requires Python 3.12+, uv, Git, Docker, the Pi 1.5.0 CLI (`npm i -g @earendil-works/pi-coding-agent`), and a model provider credential. Keep the factory on a dedicated Linux VM. Docker access grants substantial host authority; never expose its socket to generated applications.
 
 ```sh
 uv sync --frozen
@@ -24,7 +24,7 @@ uv run factory init --data ./data
 set -a
 . ./data/secrets.env
 set +a
-export FACTORY_OMP=/absolute/path/to/omp
+export FACTORY_OMP=/absolute/path/to/pi
 export FACTORY_MODEL=provider/model
 # Configure the provider's API key in your secret manager/environment.
 cp examples/config.json data/config.json
@@ -42,7 +42,7 @@ The included static profile supports HTML/CSS/JavaScript sites; the Nuxt Studio 
 
 ## Boundaries
 
-- OMP is used as a tool-free structured generation client, not an unrestricted shell agent. Whole UTF-8 file changes are validated before applying. Generated code executes on the host only when native execution is explicitly enabled; Docker profiles execute it in a container.
+- Pi is used as a tool-free structured generation client, not an unrestricted shell agent. Whole UTF-8 file changes are validated before applying. Generated code executes on the host only when native execution is explicitly enabled; Docker profiles execute it in a container.
 - One build scheduler and one deployment scheduler use distinct process locks. Jobs are durable and atomically claimed. Interrupted work is marked for inspection, never blindly replayed.
 - Memory is optional. `FACTORY_MEMORIX=/path/to/memorix` enables project-scoped MCP search/store. Memorix failure emits an event and does not replace SQLite task truth. The adapter targets documented `memorix_search` and `memorix_store` tools; live interoperability is not yet verified.
 - Context is limited to 300 KB of text source excluding dependency lockfiles (2 MB total source limit); exported artifacts to 20 MB and 10,000 files. This release is intended for small initial projects.

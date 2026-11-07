@@ -17,7 +17,7 @@ Nuxt Studio is enabled in development and disabled for production builds in the 
 
 ## Local Linux setup
 
-Requires Node 24 (tested with 24.22.1), npm, Python 3.12+, Git, uv, an installed OMP binary, and a configured provider credential for live agent work.
+Requires Node 24 (tested with 24.22.1), npm, Python 3.12+, Git, uv, the installed Pi 1.5.0 CLI (`npm i -g @earendil-works/pi-coding-agent`), and a configured provider credential for live agent work.
 
 ```sh
 uv sync --frozen
@@ -28,7 +28,7 @@ set -a
 set +a
 export FACTORY_CONFIG="$PWD/examples/config-studio-linux.json"
 export FACTORY_ALLOW_NATIVE=1
-export FACTORY_OMP=/absolute/path/to/omp
+export FACTORY_OMP=/absolute/path/to/pi
 export FACTORY_MODEL=provider/model
 # Optional: separate model choices for reviewer and tester.
 # export FACTORY_REVIEW_MODEL=provider/model
@@ -60,7 +60,7 @@ The planner includes `test_flows` alongside implementation tasks:
 }
 ```
 
-For tester-enabled profiles, an independent OMP tester invocation starts concurrently with implementation. It receives the planner's flow contract rather than the worker's code and returns a bounded declarative suite. The controller validates flow coverage, case kinds, selectors, app-relative URLs and the presence of browser assertions. It saves the suite outside the generated application source. The tester has its own optional model setting and shares the job's atomically reserved model-call budget.
+For tester-enabled profiles, an independent Pi tester invocation starts concurrently with implementation. It receives the planner's flow contract rather than the worker's code and returns a bounded declarative suite. The controller validates flow coverage, case kinds, selectors, app-relative URLs and the presence of browser assertions. It saves the suite outside the generated application source. The tester has its own optional model setting and shares the job's atomically reserved model-call budget.
 
 Supported cases currently include HTTP methods with JSON bodies, expected status and optional exact JSON response assertions; and browser navigation, fill, click, visible/text assertions. API requests use the locally launched application URL and do not follow redirects. Browser HTTP requests are restricted to that app origin; service workers and WebSockets are blocked during testing. Arbitrary generated test JavaScript is not executed by this acceptance runner.
 
@@ -75,7 +75,7 @@ The implementation is two concurrent model invocations at most: one implementer/
 - Tests must use local/mock data. The example contact endpoint validates input and does not send email.
 - Third-party calls, cross-origin authentication and WebSockets are deliberately outside the current browser runner's supported contract.
 - A native application runs under the local account and can access that account's files. Separate test files are an orchestration boundary, not an OS security boundary.
-- Live OMP and Memorix still need provider credentials and their own acceptance tests. Scripted model responses used in tests must not be described as a live AI run.
+- Live Pi and Memorix still need provider credentials and their own acceptance tests. Scripted model responses used in tests must not be described as a live AI run.
 - Binary image uploads are not part of draft import. Reusable layouts beyond the supplied starter require additional schemas/components.
 
 ## Validation commands

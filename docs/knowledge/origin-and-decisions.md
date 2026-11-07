@@ -43,7 +43,11 @@ The first supplied starter exposes brand, hero text, button label, accent color 
 
 The owner asked for a tester outside the implementation worker: it receives flows from the planner, prepares real API/web-UI testing while the app is being built, and executes those tests when the app is ready.
 
-The implementation follows that split. The planner supplies `test_flows`. A separate OMP invocation prepares a declarative suite concurrently with implementation, without seeing the worker's source in that preparation request. The controller validates coverage and executes HTTP/Playwright cases after readiness. This limits self-certification and makes evidence visible; it does not prove complete business coverage or eliminate human acceptance.
+The implementation follows that split. The planner supplies `test_flows`. A separate Pi invocation prepares a declarative suite concurrently with implementation, without seeing the worker's source in that preparation request. The controller validates coverage and executes HTTP/Playwright cases after readiness. This limits self-certification and makes evidence visible; it does not prove complete business coverage or eliminate human acceptance.
+
+## Runtime switch to public Pi and OpenCode Go
+
+Recorded 2026-11-07, after the original implementation. The owner's environment had no `omp` 18.17.0 binary, and that fork is not publicly available. The owner selected the maintained upstream: the public **Pi 1.5.0 CLI** (`@earendil-works/pi-coding-agent`) as the worker binary behind the unchanged `FACTORY_OMP` interface. The adapter (`factory/agents.py`) was updated to Pi's current flags; budgets remain factory-enforced transactionally because Pi no longer takes per-call cost flags. Credentials: the owner uses an **OpenCode Go subscription**, exposed natively in Pi as provider `opencode-go` through `OPENCODE_API_KEY`; the working paid model is `opencode-go/deepseek-v4.1-flash` (the similarly named `opencode/...` Zen route requires prepaid balance and returned 402). The OpenCode CLI itself is not used as the worker runtime. Free-tier models are not used for factory work and no burst API testing is performed. Adapter-level live validation: one single call returned parsed JSON `{"ok":1}`.
 
 ## Repository identity and publication
 

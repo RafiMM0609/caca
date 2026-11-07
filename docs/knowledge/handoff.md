@@ -6,7 +6,7 @@ Checkpoint: 2026-11-07, after implementation commit `943f044`. Read [origin and 
 
 - Authenticated local FastAPI dashboard: projects, versioned plans, task/worker tree, review evidence, tester status, source/artifact inspection and local Studio editing.
 - SQLite WAL workflow store with atomic claims, one active workflow job per project, transactional call-budget reservation, events, heartbeats, cancellation and interrupted-job reconciliation.
-- OMP adapter for planner, implementer, reviewer and independent tester. Sessions are tool-free structured generation clients with bounded calls; source edits are applied by the controller.
+- OMP adapter for planner, implementer, reviewer and independent tester. Sessions are tool-free structured generation clients with bounded calls; source edits are applied by the controller. The worker binary is now the public Pi 1.5.0 CLI (checked 2026-11-07: one live planner-lane call on `opencode-go/deepseek-v4.1-flash` returned parsed JSON `{"ok":1}` through the updated adapter; 58 unit tests pass with scripted doubles).
 - Native Linux verification with configured command arrays, deadlines/output limits and process-group cleanup. Docker verification remains available separately.
 - Plan editing after completion and rebuilding from prior verified source; original source/artifacts are retained.
 - Independent tester preparation concurrent with implementation. Declarative API assertions and browser navigation/fill/click/visible/text assertions run against a readiness-checked local app. Reports/screenshots are available as protected evidence. Failures block publication.
@@ -57,7 +57,7 @@ Checkpoint: 2026-11-07, after implementation commit `943f044`. Read [origin and 
 
 ## Remaining work — do not report as finished
 
-1. Live OMP provider generation/review/tester acceptance with configured credentials; validate structured output, error handling, quota limits and real billing behavior.
+1. Live Pi provider generation/review/tester acceptance for factory stages (planner, implementer, reviewer, tester) with the OpenCode Go provider; validate structured output, error handling, quota limits and real billing behavior. Adapter-level single-call validation passed (2026-11-07).
 2. Live Memorix search/store roundtrip, project isolation and failure behavior.
 3. Native Windows lifecycle/locks/process cleanup/npm executable support plus real Windows integration/browser tests. Currently Linux-specific code remains.
 4. Richer editable schemas/components, media import, arbitrary code editing or chat-based change requests only if prioritized by the owner. Studio currently edits scoped content.

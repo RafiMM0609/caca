@@ -10,7 +10,7 @@ Native execution is NOT a security sandbox: programs can access files accessible
 
 ## Reproduce
 
-Install Python 3.12+, uv, Git, Node.js and npm. Install OMP separately and configure the exact provider/model plus its credential for real generation.
+Install Python 3.12+, uv, Git, Node.js and npm. Install the Pi 1.5.0 CLI separately and configure the exact provider/model plus its credential for real generation.
 
 ```sh
 uv sync --frozen
@@ -20,7 +20,7 @@ set -a
 set +a
 export FACTORY_CONFIG="$PWD/examples/config-native-linux.json"
 export FACTORY_ALLOW_NATIVE=1
-export FACTORY_OMP=/absolute/path/to/omp
+export FACTORY_OMP=/absolute/path/to/pi
 export FACTORY_MODEL=provider/model
 uv run factory api
 # In another terminal with the same environment:
@@ -55,4 +55,4 @@ An automatic verifier executes configured test/build commands after independent 
 
 There is no dedicated autonomous QA agent that independently designs coverage, provisions databases, discovers all regressions, or repairs failed integration tests. The planner can assign test-writing tasks to the implementer. Review is separate; verifier failure currently stops the workflow for revision rather than automatically dispatching a repair agent.
 
-Not validated: live OMP provider generation/review, live Memorix roundtrip, external SAP/Microsoft integration, browser UI interaction, Windows execution, arbitrary customer applications, deployment to real servers, or production readiness. Memory and model credentials are not configured in this environment.
+Not validated: live Pi provider generation/review, live Memorix roundtrip, external SAP/Microsoft integration, browser UI interaction, Windows execution, arbitrary customer applications, deployment to real servers, or production readiness. Memory and model credentials are not configured in this environment.

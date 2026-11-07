@@ -4,7 +4,7 @@ Read this before changing the repository. User instructions in the current conve
 
 ## What this repository is for
 
-This is an AI software factory: an operator describes an application, reviews a planner's versioned task plan, watches Oh My Pi implement/review work, and inspects tested build artifacts. A separate tester prepares API/browser cases concurrently with implementation. Supported Nuxt Content projects can be edited visually in an embedded local Nuxt Studio draft and then verified again.
+This is an AI software factory: an operator describes an application, reviews a planner's versioned task plan, watches Pi implement/review work, and inspects tested build artifacts. A separate tester prepares API/browser cases concurrently with implementation. Supported Nuxt Content projects can be edited visually in an embedded local Nuxt Studio draft and then verified again.
 
 The owner is starting a software company from zero. The eventual range includes portfolios, CRUD/admin apps, POS and ERP integrations. Those are long-term goals, not a claim that this release already supports all of them. The current priority is a dependable local brief-to-tested-build workflow. Deployment is deferred. Understand the reason for these choices before introducing new infrastructure.
 
@@ -21,7 +21,7 @@ The owner is starting a software company from zero. The eventual range includes 
 - Validated execution target: Linux, Python 3.12+, Node 24, SQLite. Native execution requires `FACTORY_ALLOW_NATIVE=1`. Docker remains an optional verification profile.
 - Windows was explicitly requested for local laptop use but is unfinished. A later request prioritized Linux compatibility. Preserve the outstanding Windows goal; do not claim it works or silently make Docker mandatory.
 - SQLite owns workflow state. Optional Memorix owns advisory project memory. PostgreSQL is not required. Do not confuse the two stores or replace them without a concrete need.
-- Oh My Pi is the chosen model runtime. It is currently a tool-free structured client; do not describe it as a fully autonomous shell worker.
+- Oh My Pi was the original model runtime choice. The maintained interface is now the public **Pi 1.5.0 CLI** (`@earendil-works/pi-coding-agent`), still a tool-free structured generation client; do not describe it as a fully autonomous shell worker. Credentials resolve through provider environment variables, including `OPENCODE_API_KEY` for the OpenCode Go subscription.
 - The factory dashboard is FastAPI plus static HTML/CSS/JS. Generated Nuxt applications are separate. Nuxt Studio is integrated into their local preview, not a replacement for the factory backend.
 - Studio import is restricted to Markdown/JSON/YAML in `content/`. Arbitrary Vue source, media import and general drag-and-drop UI editing are not implemented.
 - Tester preparation is parallel with the implementer/reviewer lane; API/browser execution waits for app readiness. It does not automatically repair failing acceptance tests.

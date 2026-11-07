@@ -38,4 +38,4 @@ Monitor worker heartbeat age, failed/unknown jobs, memory failures, disk use and
 
 ## Production acceptance still required
 
-Live OMP generation/review with the selected provider; live Memorix roundtrip; HTTPS and token rotation; actual staging/production SSH deployment; service restart, health failure and rollback; server reboot/interrupted-release recovery; full backup restoration; application-specific browser/security/business tests. No remote production deployment was performed during implementation.
+Live Pi generation/review with the selected provider; live Memorix roundtrip; HTTPS and token rotation; actual staging/production SSH deployment; service restart, health failure and rollback; server reboot/interrupted-release recovery; full backup restoration; application-specific browser/security/business tests. No remote production deployment was performed during implementation.
