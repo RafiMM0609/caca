@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "node": {
+      "runner": "native",
+      "commands": [["npm", "ci"], ["npm", "run", "test:integration"], ["npm", "run", "build"]],
+      "artifact_dir": "dist",
+      "timeout": 600
+    }
+  },
+  "targets": {}
+}

@@ -4,7 +4,11 @@ A single-operator Linux software factory with SQLite workflow state, Oh My Pi mo
 
 **Release status: pre-production 0.1.0.** The workflow and container isolation have automated tests. Live model generation, Memorix interoperability, and deployment to your actual servers still require acceptance testing with your credentials. This is not yet a certified production system for POS, financial transactions, ERP, or mutually untrusted tenants.
 
-## Run
+## Native Linux (without Docker)
+
+Native Linux test/build execution is now available with explicit `FACTORY_ALLOW_NATIVE=1` opt-in and `examples/config-native-linux.json`. See [Linux validation and setup](docs/validation-linux.md) for actual results, revision support and limitations. Native execution is not a sandbox.
+
+## Run with Docker
 
 Requires Python 3.12+, uv, Git, Docker, an installed OMP 18.17.0 binary, and a model provider credential. Keep the factory on a dedicated Linux VM. Docker access grants substantial host authority; never expose its socket to generated applications.
 

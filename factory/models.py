@@ -73,10 +73,12 @@ class ProjectInput(StrictModel):
 
 
 class Profile(StrictModel):
-    image: str
-    verify_argv: list[str] = Field(min_length=1, max_length=50)
+    runner: Literal["docker", "native"] = "docker"
+    commands: list[list[str]] = Field(default_factory=list, max_length=20)
+    image: str = ""
+    verify_argv: list[str] = Field(default_factory=list, max_length=50)
     artifact_dir: str = "dist"
-    checks_dir: str
+    checks_dir: str = ""
     timeout: int = Field(default=300, ge=10, le=3600)
     memory_mb: int = Field(default=1024, ge=128, le=8192)
     cpus: float = Field(default=1, ge=0.25, le=8)
@@ -84,6 +86,12 @@ class Profile(StrictModel):
     @model_validator(mode="after")
     def validate_profile(self):
         safe_path(self.artifact_dir)
+        if self.runner == "native":
+            if not self.commands or any(not command or any(not arg for arg in command) for command in self.commands):
+                raise ValueError("Native profiles require nonempty command argument arrays")
+            return self
+        if not self.verify_argv or not self.checks_dir:
+            raise ValueError("Docker profiles require checks and verify_argv")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:[a-f0-9]{64}", self.image):
             raise ValueError("Verification image must be pinned by sha256 digest")
         return self
