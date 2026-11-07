@@ -7,7 +7,7 @@ import signal
 import threading
 import time
 
-from .agents import OmpAgent
+from .agents import PiAgent
 from .db import Store, uid
 from .deploy import Deployer
 from .memory import Memory
@@ -24,7 +24,7 @@ class Engine:
     def __init__(self, settings, store=None, agent=None, verifier=None, memory=None, deployer=None):
         self.settings = settings
         self.store = store or Store(settings.data / "factory.sqlite3")
-        self.agent = agent or OmpAgent(settings)
+        self.agent = agent or PiAgent(settings)
         self.verifier = verifier or Verifier()
         self.memory = memory or Memory(settings)
         self.deployer = deployer or Deployer()

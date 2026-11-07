@@ -5,16 +5,24 @@ from pathlib import Path
 
 from .process import run
 
-# Credentials are passed to the trusted OMP process only. Generated applications never receive them.
+# Credentials are passed to the trusted model-worker process only. Generated applications never receive them.
 PROVIDER_ENV = (
     "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY",
     "OPENROUTER_API_KEY", "ZAI_API_KEY", "MINIMAX_API_KEY", "DEEPSEEK_API_KEY",
-    "KIMI_API_KEY", "COPILOT_GITHUB_TOKEN",
+    "KIMI_API_KEY", "COPILOT_GITHUB_TOKEN", "OPENCODE_API_KEY",
 )
-BASE_ENV = ("PATH", "LANG", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+BASE_ENV = ("PATH", "HOME", "LANG", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
 
 
-class OmpAgent:
+class PiAgent:
+    """Public Pi CLI (pi.dev) as a tool-free structured generation client.
+
+    Backs the factory's OMP worker interface with the maintained upstream release.
+    Pi runs one bounded model call per job stage: no tools, no session, no extensions
+    and no project resources are discovered. The controller applies all file changes
+    itself; generated commands execute only inside the configured verifier.
+    """
+
     def __init__(self, settings):
         self.settings = settings
 
@@ -37,21 +45,19 @@ class OmpAgent:
         with tempfile.TemporaryDirectory(dir=runtime) as directory:
             work = Path(directory)
             env = {k: os.environ[k] for k in (*BASE_ENV, *PROVIDER_ENV) if k in os.environ}
-            env.update({"PI_CODING_AGENT_DIR": str(work / "agent"),
-                        "PI_NATIVES_DIR": str(runtime / "natives"),
-                        "XDG_CONFIG_HOME": str(work / "config"),
-                        "XDG_DATA_HOME": str(work / "data"), "XDG_CACHE_HOME": str(runtime / "cache")})
-            # No source checkout, project configuration, extensions, tools or inherited sessions.
-            # OMP is a model client here; generated commands execute only in the verifier container.
+            env.update({"PI_CODING_AGENT_DIR": str(work / "agent")})
+            # One print-mode invocation: one call, no tools, no session persistence,
+            # no project trust. Budgets are reserved transactionally by the engine,
+            # not by the CLI process.
             argv = [settings.omp, "--print", "--mode", "text", "--model", model,
-                    "--no-tools", "--no-extensions", "--no-skills", "--no-rules", "--no-context-files",
-                    "--no-session", "--no-title", "--no-lsp", "--no-pty", "--approval-mode", "always-ask",
-                    "--max-cost", str(settings.max_cost), "--max-time", str(settings.agent_timeout)]
+                    "--no-tools", "--no-extensions", "--no-skills", "--no-mcp",
+                    "--no-prompt-templates", "--no-themes", "--no-context-files",
+                    "--no-session", "--no-approve"]
             output = run(argv, cwd=work, env=env, input_data=prompt.encode(),
-                         timeout=settings.agent_timeout + 15, cancelled=cancelled)
+                         timeout=settings.agent_timeout + 15, cancelled=cancelled).strip()
             # Be tolerant of a single markdown fence, not arbitrary embedded JSON or trailing prose.
-            clean = output.strip()
-            if clean.startswith("```json\n") and clean.endswith("```"):
-                clean = clean[8:-3].strip()
-            return schema.model_validate_json(clean)
-
+            if output.startswith("```json\n") and output.endswith("```"):
+                output = output[8:-3].strip()
+            if not output:
+                raise ValueError("Model returned no text")
+            return schema.model_validate_json(output)
