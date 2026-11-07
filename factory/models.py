@@ -33,14 +33,50 @@ class Plan(StrictModel):
 
     @model_validator(mode="after")
     def valid_graph(self):
-        seen = set()
+        """Tasks form a DAG: dependencies may point anywhere, but must not cycle.
+
+        Execution order is derived from the graph, not from list position, so a planner
+        can declare independent tasks that run in parallel.
+        """
+        ids = {task.id for task in self.tasks}
+        if len(ids) != len(self.tasks):
+            raise ValueError("Task IDs must be unique")
         for task in self.tasks:
-            if task.id in seen or any(dep not in seen for dep in task.depends_on):
-                raise ValueError("Tasks must have unique IDs and dependencies earlier in the list")
-            seen.add(task.id)
+            if task.id in task.depends_on:
+                raise ValueError(f"Task {task.id} cannot depend on itself")
+            unknown = [dep for dep in task.depends_on if dep not in ids]
+            if unknown:
+                raise ValueError(f"Task {task.id} depends on unknown tasks: {', '.join(unknown)}")
         if len({flow.id for flow in self.test_flows}) != len(self.test_flows):
             raise ValueError("Test flow IDs must be unique")
+        self.execution_order()
         return self
+
+    def _dependencies(self) -> dict[str, list[str]]:
+        return {task.id: list(task.depends_on) for task in self.tasks}
+
+    def execution_order(self) -> list[str]:
+        """Topological order. Raises on a cycle instead of silently dropping tasks."""
+        deps = self._dependencies()
+        ordered: list[str] = []
+        while deps:
+            ready = sorted(name for name, needs in deps.items() if not any(d in deps for d in needs))
+            if not ready:
+                raise ValueError("Task dependencies contain a cycle")
+            for name in ready:
+                ordered.append(name)
+                deps.pop(name)
+        return ordered
+
+    def ready_set(self, completed) -> list[Task]:
+        """Tasks whose dependencies are all satisfied and that are not yet completed."""
+        done = set(completed)
+        return [task for task in self.tasks
+                if task.id not in done and all(dep in done for dep in task.depends_on)]
+
+    def ordered_tasks(self) -> list[Task]:
+        by_id = {task.id: task for task in self.tasks}
+        return [by_id[name] for name in self.execution_order()]
 
 
 def safe_path(name: str) -> str:
