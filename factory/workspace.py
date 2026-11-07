@@ -33,7 +33,13 @@ def files_under(root: Path, limit=MAX_ARTIFACT):
 
 
 def snapshot(root: Path):
-    return {p.relative_to(root).as_posix(): p.read_text() for p in files_under(root, limit=300_000)}
+    # Lockfiles are retained on disk for reproducibility, omitted from model/UI text context.
+    locks = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock"}
+    result = {p.relative_to(root).as_posix(): p.read_text() for p in files_under(root, limit=2_000_000)
+              if p.name not in locks}
+    if sum(len(value.encode()) for value in result.values()) > 300_000:
+        raise ValueError("Text context exceeds 300 KB (excluding lockfiles)")
+    return result
 
 
 def apply(root: Path, change: Change):

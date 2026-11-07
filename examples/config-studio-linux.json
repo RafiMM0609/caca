@@ -1,0 +1,29 @@
+{
+  "profiles": {
+    "nuxt-studio": {
+      "runner": "native",
+      "studio": true,
+      "tester": true,
+      "commands": [
+        [
+          "npm",
+          "ci"
+        ],
+        [
+          "npm",
+          "run",
+          "build"
+        ]
+      ],
+      "artifact_dir": "release",
+      "serve_argv": [
+        "node",
+        "release/server/index.mjs"
+      ],
+      "readiness_path": "/api/health",
+      "timeout": 900,
+      "qa_timeout": 120
+    }
+  },
+  "targets": {}
+}

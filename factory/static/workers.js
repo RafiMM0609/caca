@@ -1,7 +1,7 @@
 /* Pure projection: only the latest build of the current plan revision is shown. */
 function workerGraph(project, events) {
   const plan = project.plan ? JSON.parse(project.plan) : null;
-  const build = project.jobs.find(j => j.kind === 'build' && JSON.parse(j.payload).revision === project.revision);
+  const build = project.jobs.find(j => ['build', 'verify'].includes(j.kind) && JSON.parse(j.payload).revision === project.revision);
   const relevant = events.filter(e => build && e.job_id === build.id);
   const terminal = build && ['failed', 'cancelled', 'interrupted'].includes(build.state);
   const latest = (task, kinds) => relevant.filter(e => kinds.includes(e.kind) && (!task || JSON.parse(e.detail).task === task)).at(-1);
@@ -20,6 +20,9 @@ function workerGraph(project, events) {
       events: relevant.filter(e => JSON.parse(e.detail).task === task.id) };
   });
   const verification = latest(null, ['verification.running', 'verification.passed']);
-  return { tasks, build, verification: resolve(verification ? verification.kind === 'verification.passed' ? 'passed' : 'running' : 'waiting') };
+  const testEvent = relevant.filter(e => e.kind.startsWith('tester.')).at(-1);
+  const phase = testEvent?.kind.split('.')[1];
+  const tester = testEvent ? terminal && ['preparing', 'waiting_app', 'running'].includes(phase) ? build.state : terminal && phase === 'prepared' ? 'blocked' : phase : plan?.test_flows?.length ? 'waiting' : 'not_configured';
+  return { tasks, build, tester, verification: resolve(verification ? verification.kind === 'verification.passed' ? 'passed' : 'running' : 'waiting') };
 }
 if (typeof module !== 'undefined') module.exports = { workerGraph };

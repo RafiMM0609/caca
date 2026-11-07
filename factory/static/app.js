@@ -28,7 +28,7 @@ async function refresh() {
     status = health;
     $("project-count").textContent = projects.length;
     $("build-status").textContent = health.workers.build_heartbeat ? "Online" : "Offline";
-    $("release-status").textContent = health.workers.deploy_heartbeat ? "Online" : "Offline";
+    $("release-status").textContent = Object.values(health.profile_features || {}).some(p => p.tester) ? "On demand" : "Not configured";
     $("memory-status").textContent = health.memorix_enabled ? "Memorix" : "Disabled";
     const missing = [];
     if (!health.model_configured) missing.push("model configuration");
@@ -49,7 +49,7 @@ async function refresh() {
     if (current) {
       const projectId = current;
       const [project, events] = await Promise.all([api("/projects/" + projectId), loadEvents(projectId)]);
-      if (current === projectId) renderProject(project, events);
+      if (current === projectId) { renderProject(project, events); await refreshStudio(project); }
     }
   } finally { polling = false; }
 }
@@ -69,6 +69,11 @@ function renderProject(project, events) {
   if (plan?.assumptions.length) $("plan-questions").append(el("p", "Assumptions: " + plan.assumptions.join(" · "), "muted"));
   $("tasks").replaceChildren();
   for (const task of plan?.tasks || []) { const item = el("div", undefined, "task"), criteria = el("ul"); for (const text of task.acceptance) criteria.append(el("li", text)); item.append(el("small", task.id), el("strong", task.title), criteria); $("tasks").append(item); }
+  for (const flow of plan?.test_flows || []) {
+    const item = el("div", undefined, "task");
+    item.append(el("small", "TESTER FLOW · " + flow.kind.toUpperCase()), el("strong", flow.goal));
+    const steps = el("ol"); flow.steps.forEach(text => steps.append(el("li", text))); item.append(steps); $("tasks").append(item);
+  }
   if (revision !== project.revision) { $("plan-editor").value = JSON.stringify(plan || { summary: "Describe the approved scope here", assumptions: [], questions: [], tasks: [] }, null, 2); revision = project.revision; }
   $("save-plan").disabled = active;
   $("artifact-info").replaceChildren();
@@ -113,7 +118,7 @@ function renderWorkers(project, events) {
   planner.append(el("strong", "Planner · " + project.name), badge(project.state === "planning" ? "running" : project.plan ? "plan_available" : "not_started"));
   tree.append(planner);
   if (!graph.tasks.length) tree.append(el("p", "Workers appear when a plan is available. Planned workers have not necessarily started.", "muted"));
-  for (const task of graph.tasks) {
+  for (const task of (graph.build?.kind === "verify" ? [] : graph.tasks)) {
     const node = el("details", undefined, "worker-node"); node.dataset.task = task.id; node.open = opened.has(task.id);
     const title = el("summary"); title.append(el("strong", "Worker · " + task.title), badge(task.state)); node.append(title);
     node.append(el("p", task.instructions), el("p", "Dependencies: " + (task.depends_on.join(", ") || "None"), "muted"));
@@ -123,6 +128,64 @@ function renderWorkers(project, events) {
     if (task.job) { const button = el("button", "Changes & review evidence", "quiet"); button.onclick = () => showEvidence(() => api("/jobs/" + task.job + "/evidence")); node.append(button); }
     tree.append(node);
   }
+  if (graph.tester !== "not_configured") {
+    const tester = el("div", undefined, "worker-planner");
+    tester.append(el("strong", "Tester agent · API & browser"), badge(graph.tester));
+    if (graph.build) { const button = el("button", "Test report & screenshots", "quiet"); button.onclick = () => showTesting(graph.build.id); tester.append(button); }
+    tree.append(tester);
+  }
   const verifier = el("div", undefined, "worker-planner"); verifier.append(el("strong", "Verifier · configured checks & build"), badge(graph.verification)); tree.append(verifier);
   tree.append(el("p", "Worker acceptance is provisional until project verification passes. Execution uses the configured verifier; native Windows support is not yet implemented.", "muted"));
+}
+
+let studioProject = null;
+let reviewedDraft = null;
+async function refreshStudio(project) {
+  const state = await api("/projects/" + project.id + "/studio");
+  if (current !== project.id) return;
+  $("studio-panel").hidden = !state.enabled;
+  if (!state.enabled) return;
+  if (studioProject !== project.id) { reviewedDraft = null; $("studio-diff-text").textContent = ""; studioProject = project.id; }
+  $("studio-state").textContent = state.state;
+  const active = project.jobs.some(j => ['queued', 'running'].includes(j.state));
+  $("studio-starter").hidden = project.state !== 'draft';
+  $("studio-open").disabled = active || project.state !== 'ready' || ['editing', 'preparing'].includes(state.state);
+  $("studio-starter").disabled = active;
+  $("studio-review").disabled = !['editing', 'stopped', 'failed'].includes(state.state);
+  $("studio-apply").disabled = active || reviewedDraft !== state.id || !['stopped', 'failed'].includes(state.state);
+  $("studio-stop").disabled = !['editing', 'preparing'].includes(state.state);
+  $("studio-discard").disabled = ['none', 'imported', 'discarded'].includes(state.state);
+  $("studio-help").textContent = state.state === 'preparing' ? 'Preparing the local editor and dependencies. This can take a few minutes.' : state.state === 'failed' ? 'Preview setup failed. Your draft is retained; check the local Node runtime and dependencies, then reopen.' : state.state === 'editing' ? 'Use the floating Studio button inside the preview. Save edits there, then choose Review changes here.' : state.state === 'imported' ? 'Edits are saved as a new revision. Verification must pass before this becomes the latest successful build.' : 'Open a verified Nuxt Studio project, or initialize the supplied starter for a new project.';
+  $("studio-preview").hidden = !state.url;
+  if (state.url) {
+    if ($("studio-frame").getAttribute('src') !== state.url) $("studio-frame").src = state.url;
+    $("studio-tab").href = state.url;
+  } else $("studio-frame").removeAttribute('src');
+}
+async function studioAction(name) { return api('/projects/' + current + '/studio/' + name, {method:'POST'}); }
+$("studio-open").onclick = () => action(async () => { reviewedDraft = null; await studioAction('start'); });
+$("studio-starter").onclick = () => action(() => studioAction('starter'));
+$("studio-stop").onclick = () => action(() => studioAction('stop'));
+$("studio-discard").onclick = () => action(async () => { if (!confirm('Discard this draft? Verified builds will be kept.')) return; reviewedDraft = null; await studioAction('discard'); });
+$("studio-review").onclick = () => action(async () => {
+  const state = await studioAction('stop');
+  const diff = await api('/projects/' + current + '/studio/diff');
+  $("studio-diff-text").textContent = JSON.stringify(diff.files, null, 2);
+  $("studio-diff").open = true;
+  reviewedDraft = diff.files.length ? state.id : null;
+  if (!diff.files.length) notify('No content changes yet. Reopen the draft to edit.');
+});
+$("studio-apply").onclick = () => action(async () => { await studioAction('apply'); reviewedDraft = null; notify('New content revision queued for testing. The previous verified build is preserved.'); });
+async function showTesting(job) {
+  await showEvidence(() => api('/jobs/' + job + '/evidence'));
+  const evidence = await api('/jobs/' + job + '/evidence');
+  const report = evidence['testing/report.json'] ? JSON.parse(evidence['testing/report.json']) : null;
+  for (const item of report?.cases || []) {
+    if (!item.screenshot) continue;
+    const response = await fetch('/api/jobs/' + job + '/testing/' + item.screenshot, {headers:{Authorization:'Bearer ' + token}});
+    if (!response.ok) continue;
+    const url = URL.createObjectURL(await response.blob());
+    const img = el('img'); img.src = url; img.alt = item.name + ' · ' + item.status; img.className = 'test-screenshot';
+    $("evidence").append(img); img.onload = () => URL.revokeObjectURL(url);
+  }
 }

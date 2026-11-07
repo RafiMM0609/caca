@@ -1,4 +1,6 @@
+from contextlib import asynccontextmanager
 import hmac
+import re
 import json
 import shutil
 import time
@@ -13,6 +15,7 @@ from .config import Settings
 from .db import Conflict, Store
 from .models import DeployInput, Plan, ProjectInput, StrictModel
 from .workspace import snapshot
+from .studio import Studio
 
 
 class PlanUpdate(StrictModel):
@@ -24,7 +27,14 @@ def create_app(settings=None):
     settings = settings or Settings.from_env()
     settings.validate()
     store = Store(settings.data / "factory.sqlite3")
-    app = FastAPI(title="Anton Software Factory", docs_url=None, redoc_url=None, openapi_url=None)
+    studio = Studio(settings, store)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        yield
+        studio.close()
+
+    app = FastAPI(lifespan=lifespan, title="Anton Software Factory", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.settings = store, settings
     attempts = defaultdict(deque)
 
@@ -45,7 +55,7 @@ def create_app(settings=None):
             "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
-                                       "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+                                       "img-src 'self' data: blob:; frame-src http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         })
         return response
 
@@ -77,6 +87,10 @@ def create_app(settings=None):
     async def missing(_, exc):
         return JSONResponse({"detail": "Record not found"}, status_code=404)
 
+    @app.exception_handler(ValueError)
+    async def invalid(_, exc):
+        return JSONResponse({"detail": "Invalid draft or content; inspect the supported content types and size limits"}, status_code=422)
+
     @app.get("/healthz")
     def health():
         return {"status": "ok"}
@@ -87,6 +101,7 @@ def create_app(settings=None):
         return {"workers": pulses, "model_configured": bool(settings.model),
                 "omp_installed": bool(shutil.which(settings.omp)), "memorix_enabled": bool(settings.memorix),
                 "profiles": list(settings.profiles), "targets": list(settings.targets),
+                "profile_features": {key: {"studio": value.studio, "tester": value.tester} for key, value in settings.profiles.items()},
                 "mode": "single-operator", "version": "0.1.0"}
 
     @app.get("/api/projects")
@@ -130,6 +145,10 @@ def create_app(settings=None):
 
     @app.post("/api/projects/{project}/approve", status_code=202)
     def approve(project: str, revision: int = Query(ge=1), _=Depends(operator)):
+        record = store.project(project)
+        profile = settings.profiles[record["profile"]]
+        if profile.tester and (not record["plan"] or not Plan.model_validate_json(record["plan"]).test_flows):
+            raise HTTPException(422, "This profile requires planner API/browser test flows before approval")
         return store.enqueue(project, "build", {"revision": revision},
                              allowed={"awaiting_plan", "failed", "cancelled", "interrupted"}, next_state="building")
 
@@ -160,7 +179,58 @@ def create_app(settings=None):
             for path in sorted(root.iterdir()):
                 if path.is_file() and path.suffix in (".json", ".txt"):
                     result[path.name] = path.read_text()[:300000]
+        report = root / "testing" / "report.json"
+        if report.exists():
+            result["testing/report.json"] = report.read_text()
         return result
+
+    @app.get("/api/jobs/{job}/testing/{filename}")
+    def testing_image(job: str, filename: str, _=Depends(role)):
+        row = store.one("SELECT * FROM jobs WHERE id=?", (job,))
+        if not re.fullmatch(r"case-[0-9]+\.png", filename):
+            raise HTTPException(404, "Image not found")
+        path = settings.data / "jobs" / row["id"] / "testing" / filename
+        if not path.is_file():
+            raise HTTPException(404, "Image not found")
+        return FileResponse(path, media_type="image/png")
+
+    def local_operator(request: Request, actor=Depends(operator)):
+        if not request.client or request.client.host not in ("127.0.0.1", "::1"):
+            raise HTTPException(403, "Studio dev editing is local-only; use the factory on localhost")
+        host = request.url.hostname
+        if host not in ("127.0.0.1", "localhost", "::1", "testserver"):
+            raise HTTPException(403, "Studio dev editing requires a localhost dashboard")
+        return actor
+
+    @app.get("/api/projects/{project}/studio")
+    def studio_state(project: str, _=Depends(role)):
+        record = store.project(project)
+        return {**studio.state(project), "enabled": settings.profiles[record["profile"]].studio}
+
+    @app.post("/api/projects/{project}/studio/start", status_code=202)
+    def studio_start(project: str, _=Depends(local_operator)):
+        return studio.start(project)
+
+    @app.post("/api/projects/{project}/studio/stop")
+    def studio_stop(project: str, _=Depends(local_operator)):
+        return studio.stop_preview(project)
+
+    @app.get("/api/projects/{project}/studio/diff")
+    def studio_diff(project: str, _=Depends(operator)):
+        store.project(project)
+        return studio.diff(project)
+
+    @app.post("/api/projects/{project}/studio/apply", status_code=202)
+    def studio_apply(project: str, _=Depends(local_operator)):
+        return studio.apply(project)
+
+    @app.post("/api/projects/{project}/studio/discard")
+    def studio_discard(project: str, _=Depends(local_operator)):
+        return studio.discard(project)
+
+    @app.post("/api/projects/{project}/studio/starter", status_code=202)
+    def studio_starter(project: str, _=Depends(local_operator)):
+        return studio.starter(project)
 
     @app.get("/api/projects/{project}/source")
     def source(project: str, _=Depends(role)):

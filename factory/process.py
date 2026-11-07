@@ -44,7 +44,9 @@ def run(argv, *, cwd=None, env=None, input_data=b"", timeout=300, cancelled=lamb
             text = output.decode("utf-8", errors="replace")
             if code:
                 # Output can contain credentials; caller persists only explicitly reviewed data.
-                raise ProcessError(f"Process failed with exit code {code}")
+                error = ProcessError(f"Process failed with exit code {code}")
+                error.output = text[-100000:]
+                raise error
             return text
         finally:
             selector.close()

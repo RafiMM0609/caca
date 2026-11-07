@@ -1,0 +1,13 @@
+{
+  "brand": "Northline",
+  "eyebrow": "A SMALL STUDIO WITH BIG IDEAS",
+  "title": "Make room for your next idea.",
+  "description": "Thoughtful digital experiences, built around the people who use them. Shape this page in Studio and make it yours.",
+  "buttonLabel": "Let's build something",
+  "accent": "sage",
+  "features": [
+    {"title":"Designed for people", "description":"Clear interfaces with a purpose behind every detail."},
+    {"title":"Made to evolve", "description":"Change your story without rebuilding your foundation."},
+    {"title":"Ready for your next step", "description":"A small, dependable starting point for something bigger."}
+  ]
+}

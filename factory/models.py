@@ -17,11 +17,19 @@ class Task(StrictModel):
     depends_on: list[str] = Field(default_factory=list, max_length=30)
 
 
+class AcceptanceFlow(StrictModel):
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,47}$")
+    kind: Literal["api", "browser"]
+    goal: str = Field(min_length=10, max_length=2000)
+    steps: list[str] = Field(min_length=1, max_length=20)
+
+
 class Plan(StrictModel):
     summary: str = Field(min_length=10, max_length=12000)
     assumptions: list[str] = Field(default_factory=list, max_length=50)
     questions: list[str] = Field(default_factory=list, max_length=30)
     tasks: list[Task] = Field(min_length=1, max_length=30)
+    test_flows: list[AcceptanceFlow] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def valid_graph(self):
@@ -30,6 +38,8 @@ class Plan(StrictModel):
             if task.id in seen or any(dep not in seen for dep in task.depends_on):
                 raise ValueError("Tasks must have unique IDs and dependencies earlier in the list")
             seen.add(task.id)
+        if len({flow.id for flow in self.test_flows}) != len(self.test_flows):
+            raise ValueError("Test flow IDs must be unique")
         return self
 
 
@@ -82,10 +92,23 @@ class Profile(StrictModel):
     timeout: int = Field(default=300, ge=10, le=3600)
     memory_mb: int = Field(default=1024, ge=128, le=8192)
     cpus: float = Field(default=1, ge=0.25, le=8)
+    tester: bool = False
+    serve_argv: list[str] = Field(default_factory=list, max_length=30)
+    readiness_path: str = "/"
+    qa_timeout: int = Field(default=120, ge=10, le=600)
+    studio: bool = False
+    studio_install_argv: list[str] = Field(default_factory=lambda: ["npm", "ci"])
+    studio_dev_argv: list[str] = Field(default_factory=lambda: ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "{port}"])
 
     @model_validator(mode="after")
     def validate_profile(self):
         safe_path(self.artifact_dir)
+        if self.tester and (self.runner != "native" or not self.serve_argv):
+            raise ValueError("Tester currently requires native runner and serve_argv")
+        if self.studio and self.runner != "native":
+            raise ValueError("Local Studio requires a native profile")
+        if not self.readiness_path.startswith("/") or self.readiness_path.startswith("//"):
+            raise ValueError("Readiness must use an application-relative URL")
         if self.runner == "native":
             if not self.commands or any(not command or any(not arg for arg in command) for command in self.commands):
                 raise ValueError("Native profiles require nonempty command argument arrays")

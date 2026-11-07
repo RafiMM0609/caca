@@ -14,6 +14,7 @@ class Settings:
     omp: str = "omp"
     model: str = ""
     review_model: str = ""
+    tester_model: str = ""
     max_cost: float = 2.0
     max_job_cost: float = 20.0
     agent_timeout: int = 600
@@ -34,6 +35,7 @@ class Settings:
             omp=os.environ.get("FACTORY_OMP", "omp"),
             model=os.environ.get("FACTORY_MODEL", ""),
             review_model=os.environ.get("FACTORY_REVIEW_MODEL", ""),
+            tester_model=os.environ.get("FACTORY_TESTER_MODEL", ""),
             max_cost=float(os.environ.get("FACTORY_MAX_COST", "2")),
             max_job_cost=float(os.environ.get("FACTORY_MAX_JOB_COST", "20")),
             agent_timeout=int(os.environ.get("FACTORY_AGENT_TIMEOUT", "600")),

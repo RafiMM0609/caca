@@ -1,0 +1,16 @@
+{
+  "name": "factory-studio-starter",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build && node scripts/export-build.mjs",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "nuxt": "4.6.4",
+    "@nuxt/content": "3.16.2",
+    "nuxt-studio": "1.8.0"
+  }
+}

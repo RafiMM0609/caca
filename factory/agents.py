@@ -21,6 +21,8 @@ class OmpAgent:
     def generate(self, role, instruction, context, schema, cancelled=lambda: False):
         settings = self.settings
         model = settings.review_model if role == "review" and settings.review_model else settings.model
+        if role == "tester" and settings.tester_model:
+            model = settings.tester_model
         if not model:
             raise ValueError("FACTORY_MODEL must select an exact provider/model")
         prompt = (

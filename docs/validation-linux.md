@@ -1,4 +1,6 @@
-# Linux validation — 2026-11-07
+# Linux validation — initial native runner, 2026-11-07
+
+Historical snapshot of native-runner validation. Subsequent Studio editing and the independent tester are documented in [Studio and tester](studio-and-tester.md).
 
 ## Changes
 

@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import json
 import logging
@@ -11,6 +12,7 @@ from .db import Store, uid
 from .deploy import Deployer
 from .memory import Memory
 from .models import Change, Plan, Review
+from .testing import TestSuite
 from .process import Cancelled
 from .verifier import Verifier
 from .workspace import apply, atomic_json, clone_tree, package, snapshot
@@ -66,20 +68,22 @@ class Engine:
             if cancelled():
                 raise Cancelled("Cancelled before execution")
             if job["kind"] == "plan":
-                context = {"brief": project["brief"], "profile": project["profile"],
+                context = {"brief": project["brief"], "profile": project["profile"], "verification": settings.profiles[project["profile"]].model_dump(),
                            "memory": self.memory_operation(project_id, job_id, "search", project["brief"])}
                 plan = self.generate(job_id, "planner", "Design a concrete ordered task plan with acceptance criteria. "
                                            "List unresolved business questions in questions. Do not invent requirements. "
                                            "The static profile serves plain HTML/CSS/JS, with index.html at the root. "
-                                           "Other profiles must follow the operator's verification contract.",
+                                           "Other profiles must follow the operator's verification contract. "
+                                           "For tester-enabled profiles include test_flows with explicit API routes/status/JSON "
+                                           "and browser routes/selectors/actions/expected outcomes. These are the independent tester contract.",
                                            context, Plan, cancelled)
                 atomic_json(work / "plan.json", plan.model_dump())
                 with store.tx() as db:
                     db.execute("UPDATE projects SET plan=?,revision=revision+1,state='awaiting_plan' WHERE id=?",
                                (plan.model_dump_json(), project_id))
                 result = {"plan": plan.model_dump()}
-            elif job["kind"] == "build":
-                result = self.build(project, job, work, cancelled)
+            elif job["kind"] in ("build", "verify"):
+                result = self.build(project, job, work, cancelled, verification_only=job["kind"] == "verify")
             elif job["kind"] == "deploy":
                 result = self.deploy(project, job, cancelled)
             else:
@@ -95,7 +99,41 @@ class Engine:
             done.set()
             pulse.join(timeout=5)
 
-    def build(self, project, job, work, cancelled):
+    def prepare_tests(self, project, job, work, plan, cancelled):
+        self.store.event(project["id"], job["id"], "tester.preparing", {})
+        try:
+            suite = self.generate(job["id"], "tester",
+                                  "Prepare independent executable API and browser acceptance cases for every planner flow. "
+                                  "Use only the contract in the plan, not implementation code. Include real assertions. "
+                                  "Use CSS selectors and relative paths only. Do not weaken expected behavior.",
+                                  {"brief": project["brief"], "flows": [f.model_dump() for f in plan.test_flows]},
+                                  TestSuite, cancelled)
+            suite.validate_coverage(plan.test_flows)
+            atomic_json(work / "test-suite.json", suite.model_dump())
+            self.store.event(project["id"], job["id"], "tester.prepared", {"cases": len(suite.cases)})
+            return suite
+        except BaseException:
+            self.store.event(project["id"], job["id"], "tester.failed", {"stage": "preparation"})
+            raise
+
+    def build(self, project, job, work, cancelled, verification_only=False):
+        profile = self.settings.profiles[project["profile"]]
+        plan = Plan.model_validate_json(project["plan"])
+        if not profile.tester:
+            return self._build(project, job, work, cancelled, verification_only=verification_only)
+        if not plan.test_flows:
+            raise ValueError("Tester-enabled profiles require planner test flows")
+        abort = threading.Event()
+        def check():
+            return cancelled() or abort.is_set()
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="factory-tester") as pool:
+            future = pool.submit(self.prepare_tests, project, job, work, plan, check)
+            try:
+                return self._build(project, job, work, check, future, verification_only)
+            finally:
+                abort.set()
+
+    def _build(self, project, job, work, cancelled, tester_future=None, verification_only=False):
         store = self.store
         plan = Plan.model_validate_json(project["plan"])
         profile = self.settings.profiles[project["profile"]]
@@ -104,12 +142,14 @@ class Engine:
             raise ValueError("Plan approval is stale or unresolved")
         source = work / "source"
         previous = json.loads(project["artifact"] or "null")
-        if previous:
+        if project.get("pending_edit"):
+            clone_tree(self.settings.data / "edits" / project["pending_edit"] / "source", source)
+        elif previous:
             clone_tree(self.settings.data / "jobs" / previous["job_id"] / "source", source)
         else:
             source.mkdir()
         memory = self.memory_operation(project["id"], job["id"], "search", plan.summary)
-        for task in plan.tasks:
+        for task in ([] if verification_only else plan.tasks):
             if cancelled():
                 raise Cancelled("Cancelled between tasks")
             self.store.event(project["id"], job["id"], "task.running", {"task": task.id, "title": task.title})
@@ -151,7 +191,14 @@ class Engine:
             store.event(project["id"], job["id"], "task.accepted", {"task": task.id})
         store.event(project["id"], job["id"], "verification.running", {})
         output = work / "output"
-        log = self.verifier.verify(profile, source, output, job["id"], cancelled)
+        suite = tester_future.result() if tester_future else None
+        if suite:
+            def test_event(kind, detail):
+                store.event(project["id"], job["id"], kind, detail)
+            log = self.verifier.verify(profile, source, output, job["id"], cancelled,
+                                       suite=suite, evidence=work / "testing", on_event=test_event)
+        else:
+            log = self.verifier.verify(profile, source, output, job["id"], cancelled)
         (work / "verification.txt").write_text(log)
         if cancelled():
             raise Cancelled("Cancelled before publishing artifact")
@@ -159,7 +206,7 @@ class Engine:
         artifact.update({"job_id": job["id"], "revision": project["revision"]})
         atomic_json(work / "artifact.json", artifact)
         with store.tx() as db:
-            db.execute("UPDATE projects SET state='ready',artifact=? WHERE id=?", (json.dumps(artifact), project["id"]))
+            db.execute("UPDATE projects SET state='ready',artifact=?,pending_edit=NULL WHERE id=?", (json.dumps(artifact), project["id"]))
             store.event_tx(db, project["id"], job["id"], "verification.passed", artifact)
         self.memory_operation(project["id"], job["id"], "save", "Verified factory build", plan.summary,
                               "artifact:" + artifact["digest"])

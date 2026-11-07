@@ -42,7 +42,19 @@ class Store:
                   job_id TEXT NOT NULL, environment TEXT NOT NULL, digest TEXT NOT NULL,
                   state TEXT NOT NULL, receipt TEXT, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS studio_drafts(
+                  id TEXT PRIMARY KEY, project_id TEXT NOT NULL UNIQUE REFERENCES projects(id),
+                  base_job TEXT NOT NULL, revision INTEGER NOT NULL, state TEXT NOT NULL, created REAL NOT NULL);
             """)
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(projects)")}
+                if "pending_edit" not in columns:
+                    db.execute("ALTER TABLE projects ADD COLUMN pending_edit TEXT")
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
