@@ -13,12 +13,23 @@ from .workspace import extract, clone_tree, files_under
 
 DOCKER = ["docker", "--host=unix:///var/run/docker.sock"]
 
+# A relative checks_dir is anchored to the checkout containing this package, never to the caller's
+# working directory. Operators start the API and a scheduler from different shells; a CWD-relative
+# checks directory would resolve somewhere else (or vanish), which is exactly the failure mode where
+# a profile looks validated while running no operator checks.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def resolve_checks_dir(profile) -> Path:
+    configured = Path(profile.checks_dir)
+    return configured.resolve() if configured.is_absolute() else (REPO_ROOT / configured).resolve()
+
 
 class Verifier:
     def verify(self, profile, source: Path, output: Path, job_id, cancelled=lambda: False, **testing):
         if profile.runner == "native":
             return NativeVerifier().verify(profile, source, output, job_id, cancelled, **testing)
-        checks = Path(profile.checks_dir).resolve()
+        checks = resolve_checks_dir(profile)
         if not checks.is_dir():
             raise ValueError("Operator-owned checks directory is missing")
         output.mkdir()
@@ -82,7 +93,7 @@ class NativeVerifier:
             if profile.checks_dir:
                 # Operator-owned checks run in the same disposable build tree, after the build,
                 # so a passing build cannot skip them. They are not generated application code.
-                checks = Path(profile.checks_dir).resolve()
+                checks = resolve_checks_dir(profile)
                 if not checks.is_dir():
                     raise ValueError("Operator-owned checks directory is missing")
                 for check_index, check in enumerate(profile.checks_argv):

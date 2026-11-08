@@ -141,6 +141,30 @@ def test_example_profiles_wire_real_checks():
             assert any("secret_scan" in " ".join(argv) for argv in profile.checks_argv)
 
 
+def test_relative_checks_dir_resolves_against_the_checkout_not_the_cwd(tmp_path, monkeypatch):
+    """A CWD-relative checks directory would silently run no operator checks."""
+    from factory.verifier import resolve_checks_dir
+
+    monkeypatch.chdir(tmp_path)
+    profile = Profile(runner="native", commands=[["true"]], checks_dir="checks",
+                      checks_argv=[["python3", "{checks}/secret_scan.py", "release"]])
+    assert resolve_checks_dir(profile) == (ROOT / "checks").resolve()
+
+
+def test_absolute_checks_dir_is_taken_as_written(tmp_path):
+    from factory.verifier import resolve_checks_dir
+
+    profile = Profile(runner="native", commands=[["true"]], checks_dir=str(tmp_path),
+                      checks_argv=[["python3", "{checks}/secret_scan.py", "release"]])
+    assert resolve_checks_dir(profile) == tmp_path.resolve()
+
+
+def test_example_configs_do_not_hardcode_a_machine_specific_path():
+    """A checked-in absolute path breaks other checkouts, and a path with spaces breaks Nuxt."""
+    for name in ("config-studio-linux.json", "config-native-linux.json", "config.json"):
+        assert "/home/" not in (ROOT / "examples" / name).read_text(), f"{name} hardcodes a home directory"
+
+
 # --- End-to-end: operator checks gate publication -------------------------------------
 
 def test_operator_check_blocks_publication_of_a_leaking_build(tmp_path, monkeypatch):
