@@ -144,14 +144,38 @@ class NativeVerifier:
                         raise
                     logs.append(f"CHECK {check_index + 1} PASS: {check[0]}\n{log}")
             if suite:
-                from .local_app import LocalApp
+                from .local_app import LocalApp, expand_env
                 from .testing import run_suite
                 on_event("tester.waiting_app", {})
                 app = LocalApp(profile.serve_argv, work, env)
                 try:
                     url = app.wait_ready(profile.readiness_path, timeout=60, cancelled=cancelled)
                     on_event("tester.running", {"cases": len(suite.cases)})
-                    report = run_suite(suite, url, evidence, profile.qa_timeout, cancelled)
+                    isolate = None
+                    if any("{data}" in value for value in profile.env.values()):
+                        # A profile that gives the app a data directory can also let it
+                        # persist records, so cases cannot safely share one database. Each
+                        # case gets a fresh directory and a freshly started process.
+                        case_counter = {"n": 0}
+
+                        def isolate(_context, _work=work, _base_env=env, _profile=profile,
+                                    _counter=case_counter):
+                            _counter["n"] += 1
+                            case_data = scratch_data / f"case-{_counter['n']:02d}"
+                            case_data.mkdir(parents=True, exist_ok=True)
+                            case_env = dict(_base_env)
+                            case_env.update(expand_env(_profile.env, data_dir=case_data, app_dir=_work))
+                            case_app = LocalApp(_profile.serve_argv, _work, case_env)
+                            try:
+                                case_url = case_app.wait_ready(_profile.readiness_path,
+                                                               timeout=60, cancelled=cancelled)
+                            except BaseException:
+                                case_app.close()
+                                raise
+                            return case_url, case_app.close
+
+                    report = run_suite(suite, url, evidence, profile.qa_timeout, cancelled,
+                                       isolate=isolate)
                     on_event("tester.passed", {"cases": len(report["cases"])})
                 except BaseException:
                     on_event("tester.failed", {"stage": "execution"})

@@ -160,3 +160,108 @@ def test_serve_argv_is_relative_to_the_artifact_root(tmp_path):
     if argv[-1].startswith(prefix):
         argv[-1] = argv[-1][len(prefix):]
     assert (source / argv[-1]).is_file(), "serve_argv must resolve inside the artifact root"
+
+
+COUNTER_SERVER = '''
+const http = require("node:http");
+const fs = require("node:fs");
+const file = (process.env.DATABASE_URL || "file:./fallback.db").replace(/^file:/, "");
+let items = [];
+if (fs.existsSync(file)) items = JSON.parse(fs.readFileSync(file, "utf8"));
+const save = () => { fs.mkdirSync(require("node:path").dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(items)); };
+http.createServer((req, res) => {
+  res.setHeader("content-type", "application/json");
+  if (req.url === "/api/health") { res.end(JSON.stringify({ status: "ok" })); return; }
+  if (req.url === "/api/items" && req.method === "POST") {
+    let body = ""; req.on("data", c => body += c);
+    req.on("end", () => { items.push(JSON.parse(body || "{}")); save();
+      res.statusCode = 201; res.end(JSON.stringify({ id: items.length })); });
+    return;
+  }
+  if (req.url === "/api/items") { res.end(JSON.stringify(items)); return; }
+  res.statusCode = 404; res.end("{}");
+}).listen(Number(process.env.PORT || 0), "127.0.0.1");
+'''
+
+
+def test_each_case_gets_a_fresh_database(tmp_path):
+    """Two cases that each insert expecting `id: 1` must both pass.
+
+    Without isolation the second case received `id: 2` and failed a correct application:
+    the create-list case had already inserted the first row.
+    """
+    from factory.local_app import LocalApp, expand_env, local_env
+    from factory.testing import TestSuite, run_suite
+
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "server.cjs").write_text(COUNTER_SERVER)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    profile_env = {"DATABASE_URL": "file:{data}/app.db"}
+
+    base_env = local_env()
+    base_env.update(expand_env(profile_env, data_dir=scratch, app_dir=app))
+    main_app = LocalApp(["node", "server.cjs"], app, base_env)
+    try:
+        url = main_app.wait_ready("/api/health", timeout=30)
+
+        counter = {"n": 0}
+
+        def isolate(_context):
+            counter["n"] += 1
+            case_data = scratch / f"case-{counter['n']:02d}"
+            case_data.mkdir(parents=True, exist_ok=True)
+            case_env = dict(base_env)
+            case_env.update(expand_env(profile_env, data_dir=case_data, app_dir=app))
+            case_app = LocalApp(["node", "server.cjs"], app, case_env)
+            return case_app.wait_ready("/api/health", timeout=30), case_app.close
+
+        case = {
+            "flow_id": "create", "name": "Create expects id 1", "kind": "api",
+            "actions": [
+                {"action": "request", "method": "POST", "path": "/api/items", "body": {"n": 1},
+                 "status": 201, "json_equals": {"id": 1}},
+                {"action": "request", "path": "/api/items", "status": 200},
+            ],
+        }
+        # Two separate flows, both assuming a clean database.
+        suite = TestSuite(summary="Isolation proof.", cases=[
+            {**case, "flow_id": "first", "name": "First create sees id 1"},
+            {**case, "flow_id": "second", "name": "Second create also sees id 1"},
+        ])
+        report = run_suite(suite, url, tmp_path / "evidence", 90, isolate=isolate)
+        assert report["status"] == "passed", report
+        assert all(c["status"] == "passed" for c in report["cases"]), report
+        assert all(c.get("isolated") for c in report["cases"])
+    finally:
+        main_app.close()
+
+
+def test_without_isolation_the_second_case_fails(tmp_path):
+    """Guards the guard: the same suite must fail when isolation is disabled."""
+    from factory.local_app import LocalApp, expand_env, local_env
+    from factory.testing import TestSuite, run_suite
+
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "server.cjs").write_text(COUNTER_SERVER)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env = local_env()
+    env.update(expand_env({"DATABASE_URL": "file:{data}/app.db"}, data_dir=scratch, app_dir=app))
+    server = LocalApp(["node", "server.cjs"], app, env)
+    try:
+        url = server.wait_ready("/api/health", timeout=30)
+        case = {
+            "name": "Create expects id 1", "kind": "api",
+            "actions": [{"action": "request", "method": "POST", "path": "/api/items",
+                         "body": {"n": 1}, "status": 201, "json_equals": {"id": 1}}],
+        }
+        suite = TestSuite(summary="No isolation.", cases=[
+            {**case, "flow_id": "first"}, {**case, "flow_id": "second"}])
+        import pytest as _pytest
+        with _pytest.raises(AssertionError):
+            run_suite(suite, url, tmp_path / "evidence", 60)
+    finally:
+        server.close()

@@ -110,7 +110,20 @@ def ignorable_console(text):
     return any(marker in text for marker in IGNORABLE_CONSOLE)
 
 
-def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: False):
+def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: False,
+              isolate=None):
+    """Execute every case and return a report.
+
+    ``isolate`` is an optional callable(context) -> (base_url, cleanup). It is invoked before
+    each case and must return a freshly started application with an empty database, plus a
+    function that stops it. Without it, every case shares one process and one database.
+
+    Sharing state is wrong for any writable application. A suite whose first case inserts a
+    record and whose second case asserts on that record's id or on the total count then only
+    passes by luck: the first case inserted `id: 1`, so the second received `id: 2` and failed
+    even though the application was correct. Each case must start from the same known-empty
+    state, otherwise the tests measure the previous case instead of the contract.
+    """
     from playwright.sync_api import sync_playwright, expect
     evidence.mkdir(parents=True, exist_ok=True)
     report = {"status": "running", "cases": []}
@@ -128,11 +141,19 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                 context = page = None
                 console_errors: list[str] = []
                 page_errors: list[str] = []
+                case_url = base_url
+                cleanup = None
                 try:
+                    if isolate is not None:
+                        if cancelled():
+                            raise Cancelled("Testing cancelled")
+                        case_url, cleanup = isolate({"flow_id": case.flow_id, "kind": case.kind,
+                                                     "index": index, "case": case})
+                        result["isolated"] = True
                     if browser:
                         context = browser.new_context(service_workers="block", accept_downloads=False)
                         context.route("**/*", lambda route: route.continue_() if
-                                      urlsplit(route.request.url)[:2] == urlsplit(base_url)[:2] else route.abort())
+                                      urlsplit(route.request.url)[:2] == urlsplit(case_url)[:2] else route.abort())
                         context.route_web_socket("**/*", lambda ws: ws.close())
                         page = context.new_page()
                         page.on("console", lambda message: console_errors.append(message.text)
@@ -146,7 +167,7 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                             raise TimeoutError("Tester execution deadline exceeded")
                         duration = min(5, remaining)
                         if action.action == "request":
-                            with client.stream(action.method, base_url + action.path, json=action.body, timeout=duration) as response:
+                            with client.stream(action.method, case_url + action.path, json=action.body, timeout=duration) as response:
                                 assert response.status_code == action.status, "API status assertion failed"
                                 if action.json_equals is not None:
                                     data = bytearray()
@@ -156,7 +177,7 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                                             raise ValueError("API response exceeded test limits")
                                     assert json.loads(data) == action.json_equals, "API JSON assertion failed"
                         elif action.action == "goto":
-                            page.goto(base_url + action.path, wait_until="domcontentloaded", timeout=duration * 1000)
+                            page.goto(case_url + action.path, wait_until="domcontentloaded", timeout=duration * 1000)
                         elif action.action == "reload":
                             page.reload(wait_until="domcontentloaded", timeout=duration * 1000)
                         elif action.action == "fill":
@@ -208,7 +229,7 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                         elif action.action == "expect_count":
                             expect(page.locator(action.selector)).to_have_count(action.count, timeout=duration * 1000)
                         elif action.action == "expect_url":
-                            actual, wanted = urlsplit(page.url), urlsplit(base_url + action.value)
+                            actual, wanted = urlsplit(page.url), urlsplit(case_url + action.value)
                             assert (actual.path, actual.query) == (wanted.path, wanted.query), \
                                 f"Expected path {wanted.path}, observed {actual.path}"
                     if case.kind == "browser":
@@ -239,6 +260,13 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                             pass
                     if context:
                         context.close()
+                    # Stop the isolated application and drop its database before the next
+                    # case starts, so no case can observe another case's writes.
+                    if cleanup is not None:
+                        try:
+                            cleanup()
+                        except Exception:
+                            pass
             report["status"] = "passed"
         except BaseException:
             report["status"] = "failed"
