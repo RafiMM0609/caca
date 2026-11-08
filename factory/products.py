@@ -158,10 +158,32 @@ def commit_all(worktree: Path, message: str) -> str:
     return head_commit(worktree)
 
 
+# Lockfiles are generated, huge and mechanically reproducible, and a single real Nuxt
+# lockfile is already larger than any sane review budget. Sending one to the reviewer
+# crowds out the actual source diff and, worse, pushes real source files past the cut so
+# the reviewer concludes they are missing and rejects correct work. They stay in
+# `changed_files()` so the reviewer is still told they changed; only their contents are
+# omitted. This is a review-presentation choice: the verifier still builds the real
+# lockfile and `npm ci` still fails if it disagrees with package.json.
+LOCKFILE_NAMES = ("package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb")
+LOCKFILE_PATHSPECS = [f":(exclude,glob)**/{name}" for name in LOCKFILE_NAMES]
+
+
 def diff_against(worktree: Path, base: str, limit=200_000) -> str:
-    """Bounded unified diff of the worktree against a base commit, for independent review."""
-    text = _run(["diff", "--no-color", "--no-ext-diff", base, "--"], cwd=worktree, timeout=60)
-    return text[:limit]
+    """Bounded unified diff of the worktree against a base, for independent review.
+
+    Truncation is marked explicitly. A silently cut diff once made a reviewer reject a
+    complete, correct change because the tail looked absent; the note tells it the rest
+    exists and that "file not shown" is not evidence that a file is missing.
+    """
+    text = _run(["diff", "--no-color", "--no-ext-diff", base, "--", ".", *LOCKFILE_PATHSPECS],
+                cwd=worktree, timeout=60)
+    if len(text) <= limit:
+        return text
+    note = ("\n\n[DIFF TRUNCATED: showing the first %d of %d characters. Files listed as changed but "
+            "not shown here were cut by this limit, not omitted by the worker. Do not report a file as "
+            "missing on the strength of this truncation.]\n") % (limit, len(text))
+    return text[:limit] + note
 
 
 def changed_files(worktree: Path, base: str) -> list[str]:

@@ -117,3 +117,16 @@ def test_suite_requires_complete_flow_coverage():
 def test_tester_cannot_choose_external_targets(path):
     with pytest.raises(ValueError):
         Action(action='goto',path=path)
+
+
+def test_expect_url_accepts_the_route_in_path():
+    """A model writes `path` for expect_url the same way it does for goto/reload.
+
+    Rejecting that spelling failed a whole tester suite and burned a repair attempt on
+    every run, so the route is lifted into `value` instead.
+    """
+    assert Action(action='expect_url', path='/').value == '/'
+    # An explicit value still wins, and the route stays validated as application-relative.
+    assert Action(action='expect_url', path='/ignored', value='/kept').value == '/kept'
+    with pytest.raises(ValueError):
+        Action(action='expect_url', path='https://evil.example/')

@@ -204,8 +204,13 @@ class Engine:
             verdict = self.generate(job["id"], "review",
                                     "Independently review this diff against the task acceptance criteria and "
                                     "security. You see only the change. Reject incomplete, unsafe or "
-                                    "unrelated edits. You cannot certify test execution; the verifier does that.",
+                                    "unrelated edits. You cannot certify test execution; the verifier does that. "
+                                    "`changed_files` is the authoritative list of every file the worker touched. "
+                                    "Lockfile contents are omitted from `diff` because they are generated and "
+                                    "oversized; a changed lockfile is not an error, and an omitted file is not a "
+                                    "missing file. Judge only what the diff actually shows.",
                                     {"brief": project["brief"], "task": task.model_dump(),
+                                     "changed_files": products.changed_files(worktree, base),
                                      "diff": diff or "(no file changes)"}, Review, cancelled)
             atomic_json(work / f"{task.id}-review.json", verdict.model_dump())
             return verdict.model_dump()

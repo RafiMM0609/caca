@@ -109,6 +109,36 @@ def test_worktrees_are_isolated_until_merged(data):
     assert products.changed_files(two, base) == ["two.txt"]
 
 
+def test_review_diff_excludes_lockfiles_but_still_lists_them(data):
+    """A real lockfile is larger than the review budget and used to hide the source diff.
+
+    A 290 KB Nuxt lockfile ate the whole 200 KB budget, so the reviewer saw only a
+    truncated lockfile, concluded package.json and the page were missing, and rejected
+    correct work. Lockfiles must stay listed as changed while their contents stay out.
+    """
+    root = products.ensure_repo(data, "demo")
+    base = products.head_commit(root)
+    (root / "app.vue").write_text("<template>hi</template>\n")
+    (root / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+    products.commit_all(root, "worker change")
+
+    assert set(products.changed_files(root, base)) == {"app.vue", "package-lock.json"}
+    diff = products.diff_against(root, base)
+    assert "app.vue" in diff
+    assert "package-lock.json" not in diff
+
+
+def test_review_diff_marks_truncation_instead_of_cutting_silently(data):
+    root = products.ensure_repo(data, "demo")
+    base = products.head_commit(root)
+    (root / "big.ts").write_text("\n".join(f"const value{index} = {index};" for index in range(20_000)))
+    products.commit_all(root, "big change")
+
+    diff = products.diff_against(root, base, limit=1_000)
+    assert "DIFF TRUNCATED" in diff
+    assert "Do not report a file as missing" in diff
+
+
 def test_sequential_merge_lands_every_worker_branch(data):
     root = products.ensure_repo(data, "demo")
     branches = {}

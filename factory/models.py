@@ -79,12 +79,25 @@ class Plan(StrictModel):
         return [by_id[name] for name in self.execution_order()]
 
 
+# Example and template env files carry no secret; they are the documented way to show which
+# variables an app needs. Blocking them outright made every app that ships an `.env.example`
+# unbuildable, which is most real applications.
+ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+
+
+def _is_real_env_file(part: str) -> bool:
+    """`.env`, `.env.local` and `.env.production` are secrets; `.env.example` is documentation."""
+    if part != ".env" and not part.startswith(".env."):
+        return False
+    return not part.endswith(ENV_TEMPLATE_SUFFIXES)
+
+
 def safe_path(name: str) -> str:
     path = PurePosixPath(name)
     if (not name or name == "." or len(name) > 240 or path.is_absolute() or "\\" in name
             or any(ord(c) < 32 for c in name) or str(path) != name
             or any(p in ("..", ".git", ".omp", ".memorix", ".ssh") for p in path.parts)
-            or any(p == ".env" or p.startswith(".env.") for p in path.parts)):
+            or any(_is_real_env_file(p) for p in path.parts)):
         raise ValueError(f"Disallowed file path: {name!r}")
     return name
 

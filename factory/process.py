@@ -23,6 +23,7 @@ def run(argv, *, cwd=None, env=None, input_data=b"", timeout=300, cancelled=lamb
         process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=source, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, start_new_session=True)
         output = bytearray()
+        truncated = 0
         deadline = time.monotonic() + timeout
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)
@@ -38,10 +39,19 @@ def run(argv, *, cwd=None, env=None, input_data=b"", timeout=300, cancelled=lamb
                         selector.unregister(key.fileobj)
                     else:
                         output.extend(chunk)
+                        # A tool-using coding worker legitimately streams far more than this:
+                        # `npm ci` and a Nuxt build emit megabytes of JSON events. Killing the
+                        # worker for talking too much destroyed real work, so keep a bounded
+                        # tail instead. Bounded memory is the requirement; the tail is what
+                        # the reviewer, the transcript and error evidence actually read.
                         if len(output) > max_output:
-                            raise ProcessError("Process output exceeded limit")
+                            excess = len(output) - max_output
+                            del output[:excess]
+                            truncated += excess
             code = process.wait(timeout=max(0.1, deadline - time.monotonic()))
             text = output.decode("utf-8", errors="replace")
+            if truncated:
+                text = f"[OUTPUT TRUNCATED: discarded {truncated} earlier characters]\n" + text
             if code:
                 # Output can contain credentials; caller persists only explicitly reviewed data.
                 error = ProcessError(f"Process failed with exit code {code}")

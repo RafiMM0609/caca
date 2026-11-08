@@ -35,6 +35,22 @@ class TestAction(StrictModel):
     json_equals: dict | None = None
     count: int = Field(default=-1, ge=-1, le=100_000)
 
+    @model_validator(mode="before")
+    @classmethod
+    def accept_documented_url_position(cls, data):
+        """`expect_url` takes its route in `value`, but a model reaching for `path` is natural.
+
+        `goto` and `reload` carry their route in `path`, so a planner or tester model routinely
+        writes `{"action": "expect_url", "path": "/"}`. That is unambiguous and safe, so accept it
+        instead of rejecting a whole test suite and spending a repair attempt on a spelling. Only a
+        missing `value` is filled in; an explicit `value` always wins.
+        """
+        if isinstance(data, dict) and data.get("action") == "expect_url" and not data.get("value"):
+            path = data.get("path")
+            if isinstance(path, str) and path:
+                return {**data, "value": path}
+        return data
+
     @model_validator(mode="after")
     def valid_action(self):
         if self.action in ("request", "goto"):
