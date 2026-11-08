@@ -131,6 +131,33 @@ class ProjectInput(StrictModel):
     profile: str = Field(default="static", pattern=r"^[a-z][a-z0-9_-]{0,40}$")
 
 
+# A profile's env is operator-authored configuration, not a place for secrets. It reaches a
+# generated application, which is the least trusted process in the factory, so a credential
+# pasted here would be handed straight to code the factory itself wrote. Secrets belong in the
+# operator's environment, and generated apps must not receive factory or provider tokens.
+WITHHELD_ENV_KEYS = frozenset({
+    "FACTORY_OPERATOR_TOKEN", "FACTORY_RELEASE_TOKEN", "FACTORY_DATA", "FACTORY_CONFIG",
+    "FACTORY_OMP", "FACTORY_MODEL", "FACTORY_CHECKS_DIR",
+    "OPENCODE_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY",
+    "GEMINI_API_KEY", "OPENROUTER_API_KEY", "ZAI_API_KEY", "MINIMAX_API_KEY",
+    "DEEPSEEK_API_KEY", "KIMI_API_KEY", "COPILOT_GITHUB_TOKEN",
+})
+ALLOWED_ENV_PLACEHOLDERS = ("{data}", "{app}")
+
+
+def _validate_profile_env(env: dict[str, str]) -> None:
+    for name, value in env.items():
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", name):
+            raise ValueError(f"Invalid profile environment name: {name!r}")
+        if name in WITHHELD_ENV_KEYS or name.startswith("FACTORY_"):
+            raise ValueError(f"Profile environment may not set {name}; it is reserved")
+        if any(ord(c) < 32 or ord(c) == 127 for c in value) or len(value) > 4096:
+            raise ValueError(f"Profile environment value for {name} is invalid")
+        for token in re.findall(r"\{[^}]*\}", value):
+            if token not in ALLOWED_ENV_PLACEHOLDERS:
+                raise ValueError(f"Unknown placeholder {token} in profile environment for {name}")
+
+
 class Profile(StrictModel):
     runner: Literal["docker", "native"] = "docker"
     commands: list[list[str]] = Field(default_factory=list, max_length=20)
@@ -147,6 +174,10 @@ class Profile(StrictModel):
     serve_argv: list[str] = Field(default_factory=list, max_length=30)
     readiness_path: str = "/"
     qa_timeout: int = Field(default=120, ge=10, le=600)
+    # Extra environment for the build, operator checks and the served application.
+    # `{data}` expands to the project's persistent data directory, so a generated app can
+    # keep a SQLite file that survives restarts. Values may also use `{app}` (build tree).
+    env: dict[str, str] = Field(default_factory=dict)
     studio: bool = False
     studio_install_argv: list[str] = Field(default_factory=lambda: ["npm", "ci"])
     studio_dev_argv: list[str] = Field(default_factory=lambda: ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "{port}"])
@@ -154,6 +185,7 @@ class Profile(StrictModel):
     @model_validator(mode="after")
     def validate_profile(self):
         safe_path(self.artifact_dir)
+        _validate_profile_env(self.env)
         if self.tester and (self.runner != "native" or not self.serve_argv):
             raise ValueError("Tester currently requires native runner and serve_argv")
         if self.studio and self.runner != "native":

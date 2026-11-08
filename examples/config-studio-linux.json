@@ -30,7 +30,11 @@
           "{checks}/secret_scan.py",
           "release"
         ]
-      ]
+      ],
+      "env": {
+        "DATABASE_URL": "file:{data}/app.db",
+        "DATA_DIR": "{data}"
+      }
     }
   },
   "targets": {}

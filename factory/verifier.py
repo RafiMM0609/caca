@@ -48,6 +48,10 @@ class Verifier:
                         "--mount", f"type=bind,src={source.resolve()},dst=/source,readonly",
                         "--mount", f"type=bind,src={checks},dst=/checks,readonly",
                         "--env", "FACTORY_OUTPUT=/output", "--env", "PYTHONDONTWRITEBYTECODE=1",
+                        # The container has no persistent mount, so a profile env reaches the
+                        # build's configuration only. Persistence is a native-runner feature;
+                        # do not describe the Docker profile as stateful.
+                        *[arg for name, value in profile.env.items() for arg in ("--env", f"{name}={value}")],
                         "--entrypoint", "python3", profile.image, "-c", script, *profile.verify_argv]
         try:
             response = json.loads(run(argv, timeout=profile.timeout, cancelled=cancelled, max_output=32_000_000))
@@ -84,7 +88,8 @@ class NativeVerifier:
             return ""
         return declared if isinstance(declared, str) else ""
 
-    def verify(self, profile, source, output, job_id, cancelled=lambda: False, *, suite=None, evidence=None, on_event=lambda *_: None):
+    def verify(self, profile, source, output, job_id, cancelled=lambda: False, *, suite=None, evidence=None,
+               on_event=lambda *_: None):
         if sys.platform != "linux":
             raise RuntimeError("Native execution currently validated for Linux only")
         if os.environ.get("FACTORY_ALLOW_NATIVE") != "1":
@@ -94,9 +99,17 @@ class NativeVerifier:
         with tempfile.TemporaryDirectory(prefix="sf-native-", dir=source.parent) as directory:
             work = Path(directory) / "app"
             clone_tree(source, work)
-            from .local_app import local_env
+            from .local_app import expand_env, local_env
             env = local_env()
             env.update({"CI": "true", "npm_config_cache": os.environ.get("FACTORY_NPM_CACHE", str(Path(directory) / "npm-cache"))})
+            # Verification gets its own throwaway data directory, never the product's live one.
+            # Tests that create and then list records must behave identically on every run, so
+            # they must not see rows left behind by the previous build.
+            scratch_data = Path(directory) / "data"
+            scratch_data.mkdir(parents=True, exist_ok=True)
+            if profile.env:
+                env.update(expand_env(profile.env, data_dir=scratch_data, app_dir=work))
+                logs.append("ENV from profile: " + ", ".join(sorted(profile.env)))
             declared = self._declared_node_engine(work)
             if declared:
                 logs.append(f"ENGINE declared by package.json: node {declared}")

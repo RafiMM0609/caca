@@ -19,6 +19,31 @@ def local_env():
     return {key: os.environ[key] for key in keys if key in os.environ}
 
 
+def app_data_dir(settings, project: str) -> Path:
+    """The persistent data directory for one product.
+
+    It lives beside the product's git repository, never inside it: a SQLite file committed
+    to the repository would be overwritten by the next checkout, and it would be shipped in
+    the artifact. It also sits outside the verifier's disposable build tree, which is deleted
+    after every verification, so data written by one run survives the next.
+    """
+    path = settings.data / "products" / project / "data"
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return path
+
+
+def expand_env(env: dict[str, str], *, data_dir: Path | None = None, app_dir: Path | None = None) -> dict[str, str]:
+    """Substitute the supported placeholders in an operator-authored profile env."""
+    expanded = {}
+    for name, value in env.items():
+        if data_dir is not None:
+            value = value.replace("{data}", str(data_dir))
+        if app_dir is not None:
+            value = value.replace("{app}", str(app_dir))
+        expanded[name] = value
+    return expanded
+
+
 def runtime_facts() -> str:
     """The real toolchain the verifier will build with, for worker instructions.
 

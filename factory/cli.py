@@ -24,6 +24,9 @@ def main():
     api.add_argument("--port", type=int, default=8080)
     scheduler = commands.add_parser("scheduler")
     scheduler.add_argument("--lane", choices=["build", "deploy"], default="build")
+    run_p = commands.add_parser("run", help="Serve a project's published artifact with its persistent data directory")
+    run_p.add_argument("project")
+    run_p.add_argument("--port", type=int, default=3000)
     backup = commands.add_parser("backup")
     backup.add_argument("destination")
     commands.add_parser("doctor")
@@ -50,6 +53,30 @@ def main():
                     proxy_headers=True, forwarded_allow_ips="127.0.0.1")
     elif args.command == "scheduler":
         Engine(settings).serve(args.lane)
+    elif args.command == "run":
+        # Keep the published artifact immutable: serve a copy, so the data directory is the
+        # only thing that changes between runs.
+        from .local_app import expand_env, local_env
+        store = Store(settings.data / "factory.sqlite3")
+        project = store.project(args.project)
+        artifact = json.loads(project["artifact"] or "null")
+        if project["state"] != "ready" or not artifact:
+            raise SystemExit("Project has no verified artifact to run")
+        source = settings.data / "jobs" / artifact["job_id"] / "output"
+        if not source.is_dir():
+            raise SystemExit("The published artifact for this revision is missing")
+        profile = settings.profiles[project["profile"]]
+        data_dir = settings.data / "products" / project["id"] / "data"
+        data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        env = local_env()
+        env.update(expand_env(profile.env, data_dir=data_dir, app_dir=source))
+        env.update({"PORT": str(args.port), "NITRO_PORT": str(args.port), "HOST": "127.0.0.1",
+                    "NITRO_HOST": "127.0.0.1", "NUXT_TELEMETRY_DISABLED": "1"})
+        argv = [a.replace("{port}", str(args.port)) for a in profile.serve_argv]
+        print(json.dumps({"project": project["name"], "url": f"http://127.0.0.1:{args.port}",
+                          "data": str(data_dir), "env": sorted(profile.env)}, indent=2), flush=True)
+        os.chdir(source)
+        os.execvpe(argv[0], argv, env)
     elif args.command == "backup":
         destination = Path(args.destination)
         if destination.exists():

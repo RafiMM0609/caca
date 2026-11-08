@@ -81,6 +81,13 @@ class Engine:
                                            "List unresolved business questions in questions. Do not invent requirements. "
                                            "The static profile serves plain HTML/CSS/JS, with index.html at the root. "
                                            "Other profiles must follow the operator's verification contract. "
+                                           "Persistence: unless the brief explicitly names an external database "
+                                           "(for example Supabase, Postgres, MySQL or any hosted database with a "
+                                           "hostname, port and password), the application must store data in a local "
+                                           "SQLite file. The environment provides DATABASE_URL pointing at that file "
+                                           "and DATA_DIR pointing at the directory that holds it; both survive "
+                                           "restarts and must be read rather than hardcoded. Only choose an external "
+                                           "database when the brief asks for one by name. "
                                            "For tester-enabled profiles include test_flows with explicit API routes/status/JSON "
                                            "and browser routes/selectors/actions/expected outcomes. These are the independent tester contract.",
                                            context, Plan, cancelled)
@@ -195,6 +202,14 @@ class Engine:
                 + ("\n\nRUNTIME ON THIS MACHINE (measured, use these when declaring engine or\n"
                    "dependency constraints; do not invent version ranges):\n" + toolchain
                    if toolchain else "")
+                + ("\n\nPERSISTENCE CONTRACT:\n"
+                   "- Store data in a local SQLite file unless the brief names an external database.\n"
+                   "- Read the database location from the DATABASE_URL environment variable (a\n"
+                   "  file: URL) and the directory from DATA_DIR. Never hardcode a path.\n"
+                   "- Do not commit the database file: it is created at runtime inside DATA_DIR.\n"
+                   "  Add its filename to .gitignore.\n"
+                   "- The data must survive a process restart: do not hold records only in memory."
+                   if profile.env else "")
                 + "\n\nYOUR TASK (" + task.id + "): " + task.title
                 + "\n" + task.instructions
                 + "\n\nACCEPTANCE CRITERIA:\n" + "\n".join("- " + item for item in task.acceptance)
