@@ -22,6 +22,25 @@ class AcceptanceFlow(StrictModel):
     kind: Literal["api", "browser"]
     goal: str = Field(min_length=10, max_length=2000)
     steps: list[str] = Field(min_length=1, max_length=20)
+    # Semantic name -> CSS selector, declared once in the plan and shared by the workers that
+    # implement the page and the tester that drives it. Without a single source of truth the
+    # two guessed differently and disagreed: a worker shipped `edit-input-name` for a row in
+    # edit mode while the tester asserted `input-name`, so a correct page failed the gate.
+    selectors: dict[str, str] = Field(default_factory=dict, max_length=60)
+
+    @model_validator(mode="after")
+    def validate_selectors(self):
+        for name, selector in self.selectors.items():
+            if not re.fullmatch(r"[a-z][a-z0-9_-]{0,47}", name):
+                raise ValueError(f"Invalid selector name: {name!r}")
+            if not selector or len(selector) > 300:
+                raise ValueError(f"Invalid selector for {name}")
+            if any(ord(c) < 32 for c in selector) or "url(" in selector.lower():
+                raise ValueError(f"Invalid selector for {name}")
+        if self.kind == "browser" and not self.selectors:
+            # A browser flow that names no selectors forces the tester to invent them.
+            raise ValueError("Browser flows must declare the selectors they rely on")
+        return self
 
 
 class Plan(StrictModel):

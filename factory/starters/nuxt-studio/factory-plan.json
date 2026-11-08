@@ -1,11 +1,55 @@
 {
-  "summary":"Create a local Nuxt Studio website with editable brand, hero, theme and feature content. Include a demo contact form; no email is sent.",
-  "assumptions":["Content edits remain local until reviewed and verified."],
-  "questions":[],
-  "tasks":[{"id":"studio-site","title":"Studio editable website","instructions":"Preserve the Nuxt Content schema and make site content editable in Studio. Keep the demo contact form contract intact.","acceptance":["Content fields render from content/site.json","Contact form validates email without sending it"],"depends_on":[]}],
-  "test_flows":[
-    {"id":"health","kind":"api","goal":"The application health endpoint returns its documented JSON response.","steps":["GET /api/health returns HTTP 200 and exactly {status: ok}"]},
-    {"id":"contact-validation","kind":"api","goal":"Contact input validation accepts a valid email and rejects invalid input.","steps":["POST /api/contact with email person@example.test returns 200 and exactly {message: Thanks! Your demo enquiry is valid.}","POST /api/contact with email invalid returns 400"]},
-    {"id":"contact-journey","kind":"browser","goal":"A visitor can view the homepage and submit a valid demo contact enquiry.","steps":["Visit / and confirm [data-testid=hero-title] is visible","Fill #email with person@example.test","Click button[type=submit]","Expect [data-testid=contact-result] to contain Thanks! Your demo enquiry is valid."]}
+  "summary": "Create a local Nuxt Studio website with editable brand, hero, theme and feature content. Include a demo contact form; no email is sent.",
+  "assumptions": [
+    "Content edits remain local until reviewed and verified."
+  ],
+  "questions": [],
+  "tasks": [
+    {
+      "id": "studio-site",
+      "title": "Studio editable website",
+      "instructions": "Preserve the Nuxt Content schema and make site content editable in Studio. Keep the demo contact form contract intact.",
+      "acceptance": [
+        "Content fields render from content/site.json",
+        "Contact form validates email without sending it"
+      ],
+      "depends_on": []
+    }
+  ],
+  "test_flows": [
+    {
+      "id": "health",
+      "kind": "api",
+      "goal": "The application health endpoint returns its documented JSON response.",
+      "steps": [
+        "GET /api/health returns HTTP 200 and exactly {status: ok}"
+      ]
+    },
+    {
+      "id": "contact-validation",
+      "kind": "api",
+      "goal": "Contact input validation accepts a valid email and rejects invalid input.",
+      "steps": [
+        "POST /api/contact with email person@example.test returns 200 and exactly {message: Thanks! Your demo enquiry is valid.}",
+        "POST /api/contact with email invalid returns 400"
+      ]
+    },
+    {
+      "id": "contact-journey",
+      "kind": "browser",
+      "goal": "A visitor can view the homepage and submit a valid demo contact enquiry.",
+      "steps": [
+        "Visit / and confirm [data-testid=hero-title] is visible",
+        "Fill #email with person@example.test",
+        "Click button[type=submit]",
+        "Expect [data-testid=contact-result] to contain Thanks! Your demo enquiry is valid."
+      ],
+      "selectors": {
+        "hero": "[data-testid=\"hero-title\"]",
+        "email": "#email",
+        "submit": "button[type=\"submit\"]",
+        "result": "[data-testid=\"contact-result\"]"
+      }
+    }
   ]
 }

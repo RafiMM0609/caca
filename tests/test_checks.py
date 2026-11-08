@@ -218,7 +218,7 @@ def test_operator_check_blocks_publication_of_a_leaking_build(tmp_path, monkeypa
     store = Store(tmp_path / "factory.sqlite3")
     project = store.create_project(ProjectInput(name="Leak demo", brief="Create a page that renders a hero heading.", profile="nativex"))
     flows = [AcceptanceFlow(id="health", kind="api", goal="Validate the JSON health endpoint.", steps=["GET /api/health"]),
-             AcceptanceFlow(id="hero", kind="browser", goal="Visitor sees the hero heading.", steps=["Visit /"])]
+             AcceptanceFlow(id="hero", kind="browser", goal="Visitor sees the hero heading.", steps=["Visit /"], selectors={"heading": "h1"})]
     from factory.models import Plan
     plan = Plan(summary="Build a page with a hero heading and health route.", tasks=[
         {"id": "web", "title": "Build page", "instructions": "Create the server and build script.",

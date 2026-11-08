@@ -12,7 +12,7 @@ from factory.local_app import LocalApp
 
 FLOWS = [
     AcceptanceFlow(id='health', kind='api', goal='Validate the JSON health endpoint.', steps=['GET /api/health returns {ok:true}']),
-    AcceptanceFlow(id='visitor', kind='browser', goal='Visitor fills form and sees confirmation.', steps=['Visit /, fill #name, click button, expect #result text'])
+    AcceptanceFlow(id='visitor', kind='browser', goal='Visitor fills form and sees confirmation.', steps=['Visit /, fill #name, click button, expect #result text'], selectors={'name': '#name', 'result': '#result'})
 ]
 
 
@@ -234,3 +234,42 @@ def test_expect_text_still_fails_when_no_element_has_it(tmp_path):
             }])
     finally:
         server.shutdown()
+
+
+def test_browser_flow_must_declare_its_selectors():
+    """The plan is the single source of truth for selectors.
+
+    A worker shipped `edit-input-name` for a row in edit mode while the tester asserted
+    `input-name`; both were reasonable, and a correct page failed. Declaring selectors in
+    the flow removes the guess.
+    """
+    with pytest.raises(ValueError, match="must declare the selectors"):
+        AcceptanceFlow(id="ui", kind="browser", goal="Visitor edits a row.", steps=["visit /"])
+
+    flow = AcceptanceFlow(id="ui", kind="browser", goal="Visitor edits a row.", steps=["visit /"],
+                          selectors={"row": "[data-testid='row']"})
+    assert flow.selectors == {"row": "[data-testid='row']"}
+    # API flows carry no DOM, so they need no selectors.
+    AcceptanceFlow(id="api", kind="api", goal="Health returns ok.", steps=["GET /api/health"])
+
+
+@pytest.mark.parametrize("selectors", [
+    {"Bad Name": "#x"},
+    {"ok": ""},
+    {"ok": "a" * 400},
+    {"ok": "url(evil)"},
+])
+def test_invalid_declared_selectors_are_rejected(selectors):
+    with pytest.raises(ValueError):
+        AcceptanceFlow(id="ui", kind="browser", goal="Visitor sees the page.", steps=["visit /"],
+                       selectors=selectors)
+
+
+def test_starter_plan_declares_its_browser_selectors():
+    """The shipped starter is a template; it must satisfy the same rule."""
+    import json
+    from factory.models import Plan
+    from tests.conftest import ROOT
+    plan = Plan.model_validate(json.loads((ROOT / "factory" / "starters" / "nuxt-studio" / "factory-plan.json").read_text()))
+    browser = [f for f in plan.test_flows if f.kind == "browser"]
+    assert browser and all(f.selectors for f in browser)

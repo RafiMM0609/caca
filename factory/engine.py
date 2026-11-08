@@ -89,7 +89,12 @@ class Engine:
                                            "restarts and must be read rather than hardcoded. Only choose an external "
                                            "database when the brief asks for one by name. "
                                            "For tester-enabled profiles include test_flows with explicit API routes/status/JSON "
-                                           "and browser routes/selectors/actions/expected outcomes. These are the independent tester contract.",
+                                           "and browser routes/selectors/actions/expected outcomes. These are the independent tester contract. "
+                                           "Every browser flow MUST list the selectors it depends on in its `selectors` map "
+                                           "(name -> CSS selector), and the task instructions must use exactly those same "
+                                           "selectors. Declare every state explicitly, including fields shown while a row is "
+                                           "being edited: the worker builds what the instructions name and the tester asserts "
+                                           "only the declared selectors, so an undeclared selector makes a correct page fail.",
                                            context, Plan, cancelled)
                 atomic_json(work / "plan.json", plan.model_dump())
                 with store.tx() as db:
@@ -129,8 +134,10 @@ class Engine:
             "Use CSS selectors and relative paths only. Do not weaken expected behavior. "
             "Assert only facts the contract actually states: exact copy, counts and status codes that "
             "appear in `flows`, `tasks` or `brief`. Never invent expected text (for example treating "
-            "the product's own name as the value of an unrelated field). Use the same selectors the "
-            "task instructions require the implementation to provide. "
+            "the product's own name as the value of an unrelated field). "
+            "For browser cases use ONLY the CSS selectors in each flow's `selectors` map; do not "
+            "compose new selectors or guess names the plan does not declare. If a state you need has "
+            "no declared selector, assert what is declared instead of inventing one. "
             "For repeated items use `expect_count` with the item selector, and avoid `:nth-of-type`, "
             "which depends on sibling tag names and silently matches nothing when items are wrapped.")
         flows = [f.model_dump() for f in plan.test_flows]
@@ -211,6 +218,12 @@ class Engine:
                 WORKER_BRIEF
                 + "\n\nPRODUCT BRIEF:\n" + project["brief"]
                 + "\n\nPLAN SUMMARY:\n" + plan.summary
+                + (("\n\nREQUIRED SELECTORS (the independent tester asserts these exact CSS\n"
+                    "selectors; every one that falls inside your task must exist in the rendered DOM):\n"
+                    + "\n".join(f"- {name}: {selector}"
+                                for flow in plan.test_flows
+                                for name, selector in flow.selectors.items()))
+                   if any(f.selectors for f in plan.test_flows) else "")
                 + ("\n\nRUNTIME ON THIS MACHINE (measured, use these when declaring engine or\n"
                    "dependency constraints; do not invent version ranges):\n" + toolchain
                    if toolchain else "")
