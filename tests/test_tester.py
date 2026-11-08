@@ -273,3 +273,41 @@ def test_starter_plan_declares_its_browser_selectors():
     plan = Plan.model_validate(json.loads((ROOT / "factory" / "starters" / "nuxt-studio" / "factory-plan.json").read_text()))
     browser = [f for f in plan.test_flows if f.kind == "browser"]
     assert browser and all(f.selectors for f in browser)
+
+
+def test_expect_value_checks_form_fields(tmp_path):
+    """Input values live in `value`, not text content; expect_text cannot assert them."""
+    server, base = _serve_static(tmp_path, '<!doctype html><html><body>'
+                                          '<input data-testid="name" value="">'
+                                          '<input data-testid="filled" value="Hello"></body></html>')
+    try:
+        report = _run(tmp_path, base, [{
+            "flow_id": "fields", "name": "Field values", "kind": "browser",
+            "actions": [{"action": "goto"},
+                        {"action": "expect_value", "selector": "[data-testid='name']", "value": ""},
+                        {"action": "expect_value", "selector": "[data-testid='filled']", "value": "Hello"}],
+        }])
+        assert report["status"] == "passed", report
+    finally:
+        server.shutdown()
+
+
+def test_expect_value_fails_on_the_wrong_value(tmp_path):
+    server, base = _serve_static(tmp_path, '<!doctype html><html><body>'
+                                          '<input data-testid="filled" value="Hello"></body></html>')
+    try:
+        with pytest.raises(AssertionError):
+            _run(tmp_path, base, [{
+                "flow_id": "fields", "name": "Wrong value", "kind": "browser",
+                "actions": [{"action": "goto"},
+                            {"action": "expect_value", "selector": "[data-testid='filled']", "value": "Goodbye"}],
+            }])
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_expect_text_is_rejected_as_vacuous(value):
+    """An empty pattern matches anything, so it silently asserts nothing."""
+    with pytest.raises(ValueError, match="non-empty"):
+        Action(action="expect_text", selector="#x", value=value)

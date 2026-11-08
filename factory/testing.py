@@ -14,7 +14,8 @@ from .process import Cancelled
 from .workspace import atomic_json
 
 # Actions that assert something about the page. A browser case needs at least one.
-BROWSER_ASSERTIONS = ("expect_text", "expect_visible", "expect_hidden", "expect_count", "expect_url")
+BROWSER_ASSERTIONS = ("expect_text", "expect_value", "expect_visible", "expect_hidden",
+                      "expect_count", "expect_url")
 
 # Keyboard presses are limited to key names, never free text or shell-like input.
 KEY_NAME = re.compile(r"^[A-Za-z0-9+_-]{1,30}$")
@@ -25,7 +26,8 @@ IGNORABLE_CONSOLE = ("Failed to load resource", "net::ERR_", "favicon.ico", "ERR
 
 class TestAction(StrictModel):
     action: Literal["request", "goto", "reload", "fill", "click", "select", "press",
-                    "expect_text", "expect_visible", "expect_hidden", "expect_count", "expect_url"]
+                    "expect_text", "expect_value", "expect_visible", "expect_hidden",
+                    "expect_count", "expect_url"]
     path: str = Field(default="/", max_length=1000)
     selector: str = Field(default="", max_length=500)
     value: str = Field(default="", max_length=4000)
@@ -62,9 +64,14 @@ class TestAction(StrictModel):
             if (not self.value.startswith("/") or self.value.startswith("//") or "\\" in self.value
                     or urlsplit(self.value).netloc):
                 raise ValueError("Expected URLs must be relative application paths")
-        if self.action in ("fill", "click", "select", "expect_text", "expect_visible",
-                           "expect_hidden", "expect_count") and not self.selector:
+        if self.action in ("fill", "click", "select", "expect_text", "expect_value",
+                           "expect_visible", "expect_hidden", "expect_count") and not self.selector:
             raise ValueError("Browser action requires a selector")
+        if self.action == "expect_text" and not self.value.strip():
+            # An empty expected text matches any element, so it asserts nothing. A tester
+            # reaching for "the field is empty" wants expect_value, not expect_text.
+            raise ValueError("expect_text requires non-empty text; use expect_value for an "
+                             "empty form field")
         if self.action == "press" and not KEY_NAME.fullmatch(self.value):
             raise ValueError("Press must name a single key such as Enter or Control+A")
         if self.action == "expect_count" and self.count < 0:
@@ -216,6 +223,17 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                                             f"None of {counts} elements matched {action.selector} contained "
                                             f"the expected text {action.value!r}")
                                     time.sleep(0.1)
+                        elif action.action == "expect_value":
+                            # A form field's content lives in its `value` attribute, never in its
+                            # text content. Asserting "the field is empty after submit" through
+                            # expect_text was vacuous: an input's text is always empty, so the
+                            # check either passed for the wrong reason or failed on an empty
+                            # pattern. Compare the real value instead.
+                            locator = page.locator(action.selector)
+                            expect(locator).not_to_have_count(0, timeout=duration * 1000)
+                            # Exact match: a field value is compared as data, not as prose, so
+                            # case folding would hide a wrong value rather than reveal it.
+                            expect(locator.first).to_have_value(action.value, timeout=duration * 1000)
                         elif action.action == "expect_visible":
                             # "Visible" means every element the selector matches is visible, not
                             # "the selector resolves to exactly one element". Playwright's strict

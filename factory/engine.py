@@ -139,7 +139,10 @@ class Engine:
             "compose new selectors or guess names the plan does not declare. If a state you need has "
             "no declared selector, assert what is declared instead of inventing one. "
             "For repeated items use `expect_count` with the item selector, and avoid `:nth-of-type`, "
-            "which depends on sibling tag names and silently matches nothing when items are wrapped.")
+            "which depends on sibling tag names and silently matches nothing when items are wrapped. "
+            "To check what a form field contains, use `expect_value` with the exact value; an "
+            "`<input>` has no text content, so `expect_text` cannot observe or verify a field and "
+            "`expect_text` with an empty value asserts nothing and is rejected.")
         flows = [f.model_dump() for f in plan.test_flows]
         # The tester must see the same approved contract the workers implemented. Sending only
         # the flow list let it assert copy the operator never approved and the workers never
