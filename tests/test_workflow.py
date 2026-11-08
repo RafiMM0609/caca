@@ -170,3 +170,41 @@ def test_sqlite_online_backup(store, project, tmp_path):
     store.backup(path)
     assert Store(path).project(project["id"])["plan"] == project["plan"]
 
+
+
+def test_recovery_reconciles_workers_left_running(store, project, plan):
+    """A worker left 'running' by a dead scheduler must not stay running forever.
+
+    The dashboard reads the workers table; a stale 'running' row would show work in
+    progress for a job that already ended, and nothing ever cleared it.
+    """
+    build_job(store, project)
+    claimed = store.claim()
+    running = store.create_worker(project["id"], claimed["id"], "task-a", "worker/task-a", "base")
+    store.set_worker(running["id"], state="running")
+    done = store.create_worker(project["id"], claimed["id"], "task-b", "worker/task-b", "base")
+    store.set_worker(done["id"], state="merged")
+
+    store.recover()
+
+    states = {row["task_id"]: row["state"] for row in store.workers_for(claimed["id"])}
+    assert states["task-a"] == "interrupted", "a running worker must be reconciled"
+    assert states["task-b"] == "merged", "a finished worker must keep its outcome"
+
+
+def test_recovery_reconciles_workers_of_already_finished_jobs(store, project, plan):
+    """A worker can be left running after its job already ended.
+
+    Recovering only jobs that were running at restart left an old row 'running' forever,
+    which made the dashboard show work in progress for a project that is ready.
+    """
+    build_job(store, project)
+    claimed = store.claim()
+    stale = store.create_worker(project["id"], claimed["id"], "task-a", "worker/task-a", "base")
+    store.set_worker(stale["id"], state="running")
+    store.finish(claimed["id"], "succeeded", {})
+
+    store.recover()
+
+    states = {row["task_id"]: row["state"] for row in store.workers_for(claimed["id"])}
+    assert states["task-a"] == "interrupted"

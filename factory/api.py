@@ -118,6 +118,9 @@ def create_app(settings=None):
     def project_detail(project: str, _=Depends(role)):
         result = store.project(project)
         result["jobs"] = store.all("SELECT * FROM jobs WHERE project_id=? ORDER BY created DESC LIMIT 100", (project,))
+        # The workers table is the record of what the planner assigned and what each worker
+        # did. Without it the dashboard could show plans but never the parallel work.
+        result["workers"] = store.all("SELECT * FROM workers WHERE project_id=? ORDER BY created", (project,))
         result["deployments"] = store.all("SELECT * FROM deployments WHERE project_id=? ORDER BY created DESC", (project,))
         return result
 

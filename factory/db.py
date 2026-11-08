@@ -184,8 +184,23 @@ class Store:
                            ("Scheduler restarted; inspect evidence before retry", time.time(), row["id"]))
                 if row["kind"] != "deploy":
                     db.execute("UPDATE projects SET state='interrupted' WHERE id=?", (row["project_id"],))
+                # A worker left 'queued' or 'running' by a dead process would otherwise stay
+                # 'running' forever, and the dashboard would show work in progress for a job
+                # that already ended. Workers that already reached a terminal state keep it.
+                db.execute("UPDATE workers SET state='interrupted', finished=? "
+                           "WHERE job_id=? AND state IN ('queued','running')",
+                           (time.time(), row["id"]))
                 db.execute("UPDATE deployments SET state='unknown' WHERE job_id=? AND state='running'", (row["id"],))
                 self.event_tx(db, row["project_id"], row["id"], "job.interrupted", {})
+            # Reconcile workers for every finished job, not only jobs interrupted just now.
+            # A worker row can be left 'running' because the process died after the job was
+            # marked terminal, and an older database keeps that lie forever. Workers in a
+            # job that is still running are left alone.
+            db.execute(
+                "UPDATE workers SET state='interrupted', finished=? "
+                "WHERE state IN ('queued','running') AND job_id IN "
+                "(SELECT id FROM jobs WHERE state NOT IN ('queued','running'))",
+                (time.time(),))
 
     def cancel(self, job):
         with self.tx() as db:

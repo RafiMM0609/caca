@@ -55,7 +55,7 @@ async function refresh() {
 }
 function renderProject(project, events) {
   projectData = project;
-  renderWorkers(project, events);
+  renderWaveView(project, events);
   const active = project.jobs.some(job => ["queued", "running"].includes(job.state));
   $("project-name").textContent = project.name; $("project-brief").textContent = project.brief;
   $("project-profile").textContent = project.profile.toUpperCase() + " / REVISION " + project.revision;
@@ -110,31 +110,119 @@ async function loadEvents(project) {
     after = page[page.length - 1].seq;
   }
 }
-function renderWorkers(project, events) {
+/* Wave view: what the planner assigned, what ran together, and what each worker did.
+ * The point of this panel is the operator's original mental model — a planner handing
+ * work to workers — so it leads with waves and worker outcomes, not with prose. */
+function renderWaveView(project, events) {
   const tree = $("worker-tree"), graph = workerGraph(project, events);
   const opened = new Set([...tree.querySelectorAll('details[open]')].map(n => n.dataset.task));
   tree.replaceChildren();
+
   const planner = el("div", undefined, "worker-planner");
   planner.append(el("strong", "Planner · " + project.name), badge(project.state === "planning" ? "running" : project.plan ? "plan_available" : "not_started"));
   tree.append(planner);
-  if (!graph.tasks.length) tree.append(el("p", "Workers appear when a plan is available. Planned workers have not necessarily started.", "muted"));
-  for (const task of (graph.build?.kind === "verify" ? [] : graph.tasks)) {
-    const node = el("details", undefined, "worker-node"); node.dataset.task = task.id; node.open = opened.has(task.id);
-    const title = el("summary"); title.append(el("strong", "Worker · " + task.title), badge(task.state)); node.append(title);
+
+  if (!graph.tasks.length) {
+    tree.append(el("p", "Workers appear once a plan is approved. A planned worker has not necessarily started.", "muted"));
+    return;
+  }
+
+  // Execution summary. State concurrency plainly instead of implying it.
+  const p = graph.parallelism;
+  const summary = el("div", undefined, "exec-summary");
+  const stats = [
+    ["Waves", p.waves || "—"],
+    ["Workers", p.workers || "—"],
+    ["Widest wave", p.widest ? p.widest + (p.widest > 1 ? " tasks · parallel" : " task · sequential") : "—"],
+    ["Repairs", p.retried || 0],
+  ];
+  for (const [label, value] of stats) {
+    const stat = el("div", undefined, "exec-stat");
+    stat.append(el("small", label), el("strong", String(value)));
+    summary.append(stat);
+  }
+  tree.append(summary);
+
+  if (graph.waves.length) {
+    const list = el("div", undefined, "wave-list");
+    const byId = new Map(graph.tasks.map(t => [t.id, t]));
+    graph.waves.forEach((wave, index) => {
+      const row = el("div", undefined, "wave-row");
+      const head = el("div", undefined, "wave-head");
+      head.append(el("span", "Wave " + (index + 1), "wave-index"));
+      const names = wave.tasks.map(id => (byId.get(id)?.title || id));
+      head.append(el("span", names.join(" + "), "wave-tasks"));
+      const merged = wave.merged || [];
+      // A wave with no `wave.done` only means the run ended before it closed; it must not
+      // claim "running" beside a worker that already reports interrupted or failed.
+      const ranJob = graph.historyJob || graph.build;
+      const terminalJob = ranJob && ["failed", "cancelled", "interrupted", "succeeded"].includes(ranJob.state);
+      const state = wave.retried ? "retried"
+        : wave.merged === null ? (terminalJob ? "incomplete" : "running")
+        : merged.length === wave.tasks.length ? "merged"
+        : merged.length ? "partial" : (terminalJob ? "incomplete" : "pending");
+      head.append(badge(state));
+      row.append(head);
+      if (wave.tasks.length > 1) row.append(el("p", wave.tasks.length + " workers ran concurrently in this wave.", "wave-note"));
+      if (wave.retried) row.append(el("p", "A worker was rejected by review; the wave was retried.", "wave-note"));
+      list.append(row);
+    });
+    tree.append(list);
+  }
+
+  // Per-worker detail, grouped by wave so the reading order matches execution.
+  const order = graph.tasks.slice().sort((a, b) => (a.wave || 999) - (b.wave || 999));
+  for (const task of (graph.build?.kind === "verify" && !graph.waves.length ? [] : order)) {
+    const node = el("details", undefined, "worker-node");
+    node.dataset.task = task.id;
+    node.open = opened.has(task.id);
+    const title = el("summary");
+    const left = el("span");
+    left.append(el("strong", "Worker · " + task.title));
+    if (task.wave) left.append(el("span", " wave " + task.wave, "wave-tag"));
+    title.append(left, badge(task.state));
+    node.append(title);
+
+    const meta = el("div", undefined, "worker-meta");
+    if (task.branch) meta.append(el("code", task.branch));
+    if (task.attempts) meta.append(el("span", task.attempts > 1 ? task.attempts + " attempts" : "1 attempt"));
+    if (task.retried) meta.append(el("span", "repaired after review", "warn"));
+    node.append(meta);
+
     node.append(el("p", task.instructions), el("p", "Dependencies: " + (task.depends_on.join(", ") || "None"), "muted"));
-    const criteria = el("ul"); task.acceptance.forEach(text => criteria.append(el("li", text))); node.append(criteria);
-    const reviewer = el("div", undefined, "worker-review"); reviewer.append(el("span", "Independent reviewer"), badge(task.review)); node.append(reviewer);
-    for (const event of task.events) { const detail = JSON.parse(event.detail); node.append(el("p", event.kind + (detail.attempt ? " · attempt " + detail.attempt : ""), "muted")); if (detail.findings?.length) node.append(el("p", detail.findings.join(" · "))); }
-    if (task.job) { const button = el("button", "Changes & review evidence", "quiet"); button.onclick = () => showEvidence(() => api("/jobs/" + task.job + "/evidence")); node.append(button); }
+    const criteria = el("ul");
+    task.acceptance.forEach(text => criteria.append(el("li", text)));
+    node.append(criteria);
+
+    const reviewer = el("div", undefined, "worker-review");
+    reviewer.append(el("span", "Independent reviewer"), badge(task.review));
+    node.append(reviewer);
+
+    for (const event of task.events) {
+      const detail = JSON.parse(event.detail);
+      node.append(el("p", event.kind + (detail.attempt ? " · attempt " + detail.attempt : ""), "muted"));
+      if (detail.findings?.length) node.append(el("p", detail.findings.join(" · ")));
+    }
+    if (task.job) {
+      const button = el("button", "Changes & review evidence", "quiet");
+      button.onclick = () => showEvidence(() => api("/jobs/" + task.job + "/evidence"));
+      node.append(button);
+    }
     tree.append(node);
   }
-  if (graph.tester !== "not_configured") {
-    const tester = el("div", undefined, "worker-planner");
-    tester.append(el("strong", "Tester agent · API & browser"), badge(graph.tester));
-    if (graph.build) { const button = el("button", "Test report & screenshots", "quiet"); button.onclick = () => showTesting(graph.build.id); tester.append(button); }
-    tree.append(tester);
+
+  const tester = el("div", undefined, "worker-planner");
+  tester.append(el("strong", "Tester agent · API & browser"), badge(graph.tester));
+  if (graph.build) {
+    const button = el("button", "Test report & screenshots", "quiet");
+    button.onclick = () => showTesting(graph.build.id);
+    tester.append(button);
   }
-  const verifier = el("div", undefined, "worker-planner"); verifier.append(el("strong", "Verifier · configured checks & build"), badge(graph.verification)); tree.append(verifier);
+  tree.append(tester);
+
+  const verifier = el("div", undefined, "worker-planner");
+  verifier.append(el("strong", "Verifier · configured checks & build"), badge(graph.verification));
+  tree.append(verifier);
   tree.append(el("p", "Worker acceptance is provisional until project verification passes. Execution uses the configured verifier; native Windows support is not yet implemented.", "muted"));
 }
 
