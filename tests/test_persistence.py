@@ -265,3 +265,35 @@ def test_without_isolation_the_second_case_fails(tmp_path):
             run_suite(suite, url, tmp_path / "evidence", 60)
     finally:
         server.close()
+
+
+def test_each_case_gets_its_own_time_budget(tmp_path):
+    """A shared suite deadline made a later case time out purely because earlier cases ran.
+
+    With per-case app restarts the cost is per case, so the budget must be too.
+    """
+    import time
+    from factory.local_app import LocalApp, expand_env, local_env
+    from factory.testing import TestSuite, run_suite
+
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "server.cjs").write_text(COUNTER_SERVER)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env = local_env()
+    env.update(expand_env({"DATABASE_URL": "file:{data}/app.db"}, data_dir=scratch, app_dir=app))
+    server = LocalApp(["node", "server.cjs"], app, env)
+    try:
+        url = server.wait_ready("/api/health", timeout=30)
+        slow = {"name": "Slow case", "kind": "api",
+                "actions": [{"action": "request", "path": "/api/items", "status": 200}]}
+        suite = TestSuite(summary="Per-case budget.", cases=[
+            {**slow, "flow_id": "one"}, {**slow, "flow_id": "two"}, {**slow, "flow_id": "three"}])
+        started = time.monotonic()
+        report = run_suite(suite, url, tmp_path / "evidence", timeout=20)
+        assert report["status"] == "passed", report
+        assert len(report["cases"]) == 3
+        assert time.monotonic() - started < 60
+    finally:
+        server.close()

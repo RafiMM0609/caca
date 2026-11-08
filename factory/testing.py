@@ -127,7 +127,6 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
     from playwright.sync_api import sync_playwright, expect
     evidence.mkdir(parents=True, exist_ok=True)
     report = {"status": "running", "cases": []}
-    deadline = time.monotonic() + timeout
     browser = None
     with sync_playwright() as playwright, httpx.Client(trust_env=False, follow_redirects=False, timeout=5) as client:
         try:
@@ -143,6 +142,11 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                 page_errors: list[str] = []
                 case_url = base_url
                 cleanup = None
+                # `timeout` bounds one case, not the whole suite. A shared budget meant a
+                # later case timed out purely because earlier cases had spent it, and with
+                # per-case isolation each case also pays for starting its own process, so a
+                # suite-wide deadline turned a correct application into a TimeoutError.
+                case_deadline = time.monotonic() + timeout
                 try:
                     if isolate is not None:
                         if cancelled():
@@ -162,9 +166,9 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                     for action in case.actions:
                         if cancelled():
                             raise Cancelled("Testing cancelled")
-                        remaining = deadline - time.monotonic()
+                        remaining = case_deadline - time.monotonic()
                         if remaining <= 0:
-                            raise TimeoutError("Tester execution deadline exceeded")
+                            raise TimeoutError("Tester case deadline exceeded")
                         duration = min(5, remaining)
                         if action.action == "request":
                             with client.stream(action.method, case_url + action.path, json=action.body, timeout=duration) as response:
@@ -173,7 +177,7 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                                     data = bytearray()
                                     for chunk in response.iter_bytes():
                                         data.extend(chunk)
-                                        if len(data) > 1_000_000 or time.monotonic() > deadline:
+                                        if len(data) > 1_000_000 or time.monotonic() > case_deadline:
                                             raise ValueError("API response exceeded test limits")
                                     assert json.loads(data) == action.json_equals, "API JSON assertion failed"
                         elif action.action == "goto":
