@@ -19,6 +19,29 @@ def local_env():
     return {key: os.environ[key] for key in keys if key in os.environ}
 
 
+def runtime_facts() -> str:
+    """The real toolchain the verifier will build with, for worker instructions.
+
+    A worker that is not told the interpreter version guesses it from training data. That is
+    how a generated package.json came to claim `engines.node: ">=20.19.0"` while its own
+    Nuxt dependency required `^22.22.3 || ^24.15.0` — a package that lies about what it
+    supports. Reporting the measured versions lets the worker declare constraints that match
+    the machine that will actually run `npm ci` and `node`.
+    """
+    facts = []
+    for label, argv in (("Node.js", ["node", "--version"]),
+                        ("npm", ["npm", "--version"]),
+                        ("Python", [sys.executable, "--version"])):
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=15,
+                                 env=local_env()).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        if out:
+            facts.append(f"- {label}: {out.splitlines()[0]}")
+    return "\n".join(facts)
+
+
 class LocalApp:
     def __init__(self, argv, cwd, env=None):
         with socket.socket() as sock:

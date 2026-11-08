@@ -181,6 +181,10 @@ class Engine:
         products.checkout_target(root)
         memory = self.memory_operation(project["id"], job["id"], "search", plan.summary)
 
+        # Measured once per build: the exact runtime the verifier will use.
+        from .local_app import runtime_facts
+        toolchain = runtime_facts()
+
         def instructions_for(task, base_context):
             # The worker reads the real files itself, so it gets the task contract and the
             # product brief rather than a full source dump.
@@ -188,6 +192,9 @@ class Engine:
                 WORKER_BRIEF
                 + "\n\nPRODUCT BRIEF:\n" + project["brief"]
                 + "\n\nPLAN SUMMARY:\n" + plan.summary
+                + ("\n\nRUNTIME ON THIS MACHINE (measured, use these when declaring engine or\n"
+                   "dependency constraints; do not invent version ranges):\n" + toolchain
+                   if toolchain else "")
                 + "\n\nYOUR TASK (" + task.id + "): " + task.title
                 + "\n" + task.instructions
                 + "\n\nACCEPTANCE CRITERIA:\n" + "\n".join("- " + item for item in task.acceptance)

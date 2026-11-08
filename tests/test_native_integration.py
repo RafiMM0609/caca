@@ -96,3 +96,31 @@ def test_native_requires_explicit_opt_in(settings, tmp_path, monkeypatch):
     monkeypatch.delenv('FACTORY_ALLOW_NATIVE', raising=False)
     with pytest.raises(RuntimeError, match='FACTORY_ALLOW_NATIVE'):
         NativeVerifier().verify(Profile(runner='native', commands=[['npm','run','build']]), tmp_path, tmp_path/'out', 'test')
+
+
+def test_runtime_facts_report_the_real_toolchain():
+    """Workers must be told the measured runtime instead of guessing engine ranges.
+
+    A generated package.json once declared `engines.node: ">=20.19.0"` while its own Nuxt
+    dependency required `^22.22.3 || ^24.15.0`. npm treats engines as advisory, so the
+    mismatch built locally and shipped a package that misstates its own requirements.
+    """
+    from factory.local_app import runtime_facts
+
+    facts = runtime_facts()
+    assert "- Node.js: v" in facts or not shutil.which("node")
+    assert "- npm: " in facts or not shutil.which("npm")
+
+
+def test_declared_node_engine_is_read_and_survives_bad_input(tmp_path):
+    from factory.verifier import NativeVerifier
+
+    manifest = tmp_path / "package.json"
+    manifest.write_text(json.dumps({"engines": {"node": "^22.22.3 || ^24.15.0"}}))
+    assert NativeVerifier._declared_node_engine(tmp_path) == "^22.22.3 || ^24.15.0"
+
+    manifest.write_text("{not json")
+    assert NativeVerifier._declared_node_engine(tmp_path) == ""
+
+    manifest.unlink()
+    assert NativeVerifier._declared_node_engine(tmp_path) == ""

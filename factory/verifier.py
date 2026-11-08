@@ -65,7 +65,25 @@ class Verifier:
 
 
 class NativeVerifier:
-    """Opt-in trusted local execution. NOT a filesystem/network/resource sandbox."""
+    """Opt-in trusted local execution. NOT a filesystem/network/sandbox."""
+
+    @staticmethod
+    def _declared_node_engine(work: Path) -> str:
+        """The `engines.node` a generated package.json claims, if any.
+
+        npm treats `engines` as advisory, so a package can build locally while declaring a
+        range that excludes the machine it runs on. Recording the claim next to the measured
+        runtime makes that mismatch visible in verification evidence instead of invisible.
+        """
+        manifest = work / "package.json"
+        if not manifest.is_file():
+            return ""
+        try:
+            declared = json.loads(manifest.read_text()).get("engines", {}).get("node", "")
+        except (ValueError, OSError, AttributeError):
+            return ""
+        return declared if isinstance(declared, str) else ""
+
     def verify(self, profile, source, output, job_id, cancelled=lambda: False, *, suite=None, evidence=None, on_event=lambda *_: None):
         if sys.platform != "linux":
             raise RuntimeError("Native execution currently validated for Linux only")
@@ -79,6 +97,9 @@ class NativeVerifier:
             from .local_app import local_env
             env = local_env()
             env.update({"CI": "true", "npm_config_cache": os.environ.get("FACTORY_NPM_CACHE", str(Path(directory) / "npm-cache"))})
+            declared = self._declared_node_engine(work)
+            if declared:
+                logs.append(f"ENGINE declared by package.json: node {declared}")
             for index, command in enumerate(profile.commands):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
