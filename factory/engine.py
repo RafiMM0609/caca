@@ -126,13 +126,25 @@ class Engine:
             "Create exactly one case per flow: copy each flow's id into case.flow_id and its kind "
             "into case.kind; do not invent, rename or omit flow ids. "
             "Use only the contract in the plan, not implementation code. Include real assertions. "
-            "Use CSS selectors and relative paths only. Do not weaken expected behavior.")
+            "Use CSS selectors and relative paths only. Do not weaken expected behavior. "
+            "Assert only facts the contract actually states: exact copy, counts and status codes that "
+            "appear in `flows`, `tasks` or `brief`. Never invent expected text (for example treating "
+            "the product's own name as the value of an unrelated field). Use the same selectors the "
+            "task instructions require the implementation to provide. "
+            "For repeated items use `expect_count` with the item selector, and avoid `:nth-of-type`, "
+            "which depends on sibling tag names and silently matches nothing when items are wrapped.")
         flows = [f.model_dump() for f in plan.test_flows]
+        # The tester must see the same approved contract the workers implemented. Sending only
+        # the flow list let it assert copy the operator never approved and the workers never
+        # wrote, which failed a correct build.
+        tasks = [{"id": t.id, "title": t.title, "instructions": t.instructions,
+                  "acceptance": t.acceptance} for t in plan.tasks]
         suite = None
         for attempt in range(self.settings.max_repairs + 1):
             if cancelled():
                 raise Cancelled("Cancelled while preparing tests")
-            context = {"brief": project["brief"], "flows": flows}
+            context = {"brief": project["brief"], "flows": flows, "tasks": tasks,
+                       "plan_summary": plan.summary, "assumptions": plan.assumptions}
             if attempt:
                 # Wait between attempts instead of re-hitting the provider rapidly.
                 for _ in range(20):

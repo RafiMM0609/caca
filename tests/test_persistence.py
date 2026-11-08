@@ -141,3 +141,22 @@ def test_records_survive_a_restart(tmp_path):
     finally:
         process.terminate()
         process.wait(timeout=10)
+
+
+def test_serve_argv_is_relative_to_the_artifact_root(tmp_path):
+    """The artifact root IS artifact_dir, so a leading `release/` must be stripped.
+
+    `factory run` joined serve_argv against the job output and asked node for
+    release/release/server/index.mjs, so a published project could not be started.
+    """
+
+    source = tmp_path / "output"
+    (source / "server").mkdir(parents=True)
+    (source / "server" / "index.mjs").write_text("/* bundle */")
+    profile = Profile(runner="native", commands=[["true"]], artifact_dir="release",
+                      serve_argv=["node", "release/server/index.mjs"])
+    argv = list(profile.serve_argv)
+    prefix = profile.artifact_dir.strip("/") + "/"
+    if argv[-1].startswith(prefix):
+        argv[-1] = argv[-1][len(prefix):]
+    assert (source / argv[-1]).is_file(), "serve_argv must resolve inside the artifact root"

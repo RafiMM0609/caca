@@ -168,11 +168,43 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                         elif action.action == "press":
                             page.keyboard.press(action.value)
                         elif action.action == "expect_text":
-                            expect(page.locator(action.selector)).to_contain_text(action.value, timeout=duration * 1000)
+                            # "The page shows this text" must hold for whatever the selector
+                            # matches: a list of three service cards is a legitimate target, and
+                            # the assertion should pass when ANY of them shows the copy. Checking
+                            # only the first element failed a correct page, because "Furniture
+                            # restoration" lives in the second card. Matching is also
+                            # case-insensitive so capitalisation alone cannot fail the test.
+                            pattern = re.compile(re.escape(action.value.strip()), re.IGNORECASE)
+                            locator = page.locator(action.selector)
+                            expect(locator).not_to_have_count(0, timeout=duration * 1000)
+                            counts = locator.count()
+                            if counts == 1:
+                                expect(locator.first).to_contain_text(pattern, timeout=duration * 1000)
+                            else:
+                                deadline_text = time.monotonic() + duration
+                                while True:
+                                    texts = [locator.nth(index).inner_text() for index in range(counts)]
+                                    if any(pattern.search(text) for text in texts):
+                                        break
+                                    if time.monotonic() > deadline_text:
+                                        raise AssertionError(
+                                            f"None of {counts} elements matched {action.selector} contained "
+                                            f"the expected text {action.value!r}")
+                                    time.sleep(0.1)
                         elif action.action == "expect_visible":
-                            expect(page.locator(action.selector)).to_be_visible(timeout=duration * 1000)
+                            # "Visible" means every element the selector matches is visible, not
+                            # "the selector resolves to exactly one element". Playwright's strict
+                            # mode fails a locator matching three service cards, so a correct page
+                            # with three visible cards failed a reasonable assertion. An empty
+                            # match must still fail, so first wait for the count to be non-zero.
+                            locator = page.locator(action.selector)
+                            expect(locator).not_to_have_count(0, timeout=duration * 1000)
+                            for index in range(locator.count()):
+                                expect(locator.nth(index)).to_be_visible(timeout=duration * 1000)
                         elif action.action == "expect_hidden":
-                            expect(page.locator(action.selector)).to_be_hidden(timeout=duration * 1000)
+                            locator = page.locator(action.selector)
+                            for index in range(locator.count()):
+                                expect(locator.nth(index)).to_be_hidden(timeout=duration * 1000)
                         elif action.action == "expect_count":
                             expect(page.locator(action.selector)).to_have_count(action.count, timeout=duration * 1000)
                         elif action.action == "expect_url":

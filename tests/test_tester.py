@@ -130,3 +130,107 @@ def test_expect_url_accepts_the_route_in_path():
     assert Action(action='expect_url', path='/ignored', value='/kept').value == '/kept'
     with pytest.raises(ValueError):
         Action(action='expect_url', path='https://evil.example/')
+
+
+MULTI = '''<!doctype html><html><body>
+<section data-testid="services">
+  <div data-testid="card">One</div><div data-testid="card">Two</div><div data-testid="card">Three</div>
+</section>
+<p data-testid="tagline">Handmade teak furniture, built to last.</p>
+</body></html>'''
+
+
+def _serve_static(tmp_path, html):
+    import http.server
+    import socketserver
+    import threading
+    (tmp_path / "index.html").write_text(html)
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **k):
+            super().__init__(*a, directory=str(tmp_path), **k)
+        def log_message(self, *a):
+            pass
+
+    server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def _run(tmp_path, base, cases):
+    from factory.testing import TestSuite
+    suite = TestSuite(summary="Assertion semantics.", cases=cases)
+    evidence = tmp_path / "evidence"
+    report = run_suite(suite, base, evidence, 30)
+    return report
+
+
+def test_expect_visible_accepts_a_selector_matching_several_visible_elements(tmp_path):
+    """Playwright strict mode failed three visible cards; "visible" must mean all visible."""
+    import shutil
+    if not shutil.which("node") and not __import__("os").environ.get("FACTORY_CHROMIUM"):
+        pytest.skip("browser required")
+    server, base = _serve_static(tmp_path, MULTI)
+    try:
+        report = _run(tmp_path, base, [{
+            "flow_id": "cards", "name": "Three visible cards", "kind": "browser",
+            "actions": [{"action": "goto"}, {"action": "expect_visible", "selector": "[data-testid='card']"}],
+        }])
+        assert report["status"] == "passed", report
+    finally:
+        server.shutdown()
+
+
+def test_expect_visible_still_fails_when_nothing_matches(tmp_path):
+    """An empty match must still fail; a failure aborts the suite by design."""
+    server, base = _serve_static(tmp_path, MULTI)
+    try:
+        with pytest.raises(AssertionError):
+            _run(tmp_path, base, [{
+                "flow_id": "missing", "name": "Missing selector fails", "kind": "browser",
+                "actions": [{"action": "goto"}, {"action": "expect_visible", "selector": "[data-testid='nope']"}],
+            }])
+    finally:
+        server.shutdown()
+
+
+def test_expect_text_ignores_capitalisation(tmp_path):
+    """A page capitalising a sentence must not fail a reasonable text assertion."""
+    server, base = _serve_static(tmp_path, MULTI)
+    try:
+        report = _run(tmp_path, base, [{
+            "flow_id": "copy", "name": "Case-insensitive copy", "kind": "browser",
+            "actions": [{"action": "goto"},
+                        {"action": "expect_text", "selector": "[data-testid='tagline']",
+                         "value": "handmade teak furniture"}],
+        }])
+        assert report["status"] == "passed", report
+    finally:
+        server.shutdown()
+
+
+def test_expect_text_accepts_text_in_any_matched_element(tmp_path):
+    """A selector matching several items must pass when any one of them shows the copy."""
+    server, base = _serve_static(tmp_path, MULTI)
+    try:
+        report = _run(tmp_path, base, [{
+            "flow_id": "cards", "name": "Text lives in the third card", "kind": "browser",
+            "actions": [{"action": "goto"},
+                        {"action": "expect_text", "selector": "[data-testid='card']", "value": "Three"}],
+        }])
+        assert report["status"] == "passed", report
+    finally:
+        server.shutdown()
+
+
+def test_expect_text_still_fails_when_no_element_has_it(tmp_path):
+    server, base = _serve_static(tmp_path, MULTI)
+    try:
+        with pytest.raises(AssertionError):
+            _run(tmp_path, base, [{
+                "flow_id": "cards", "name": "Absent text fails", "kind": "browser",
+                "actions": [{"action": "goto"},
+                            {"action": "expect_text", "selector": "[data-testid='card']", "value": "Absent"}],
+            }])
+    finally:
+        server.shutdown()

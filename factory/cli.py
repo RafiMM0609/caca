@@ -62,17 +62,31 @@ def main():
         artifact = json.loads(project["artifact"] or "null")
         if project["state"] != "ready" or not artifact:
             raise SystemExit("Project has no verified artifact to run")
+        # The artifact root already corresponds to `artifact_dir` (release/), so `serve_argv`
+        # paths are relative to it. Joining them against the job directory looked for
+        # release/release/server/index.mjs and failed to start.
         source = settings.data / "jobs" / artifact["job_id"] / "output"
         if not source.is_dir():
             raise SystemExit("The published artifact for this revision is missing")
         profile = settings.profiles[project["profile"]]
+        argv = [a.replace("{port}", str(args.port)) for a in profile.serve_argv]
+        # The verifier runs serve_argv with the project root as cwd, where `release/` exists.
+        # The published artifact IS `release/`, so an argv path that starts with artifact_dir
+        # must lose that prefix or node is asked for release/release/server/index.mjs.
+        prefix = profile.artifact_dir.strip("/") + "/"
+        if argv and argv[-1].startswith(prefix):
+            argv[-1] = argv[-1][len(prefix):]
+        entry = source / argv[-1] if argv else None
+        if not argv or not entry.is_file():
+            raise SystemExit(
+                "serve_argv does not resolve inside the published artifact (looked for {})".format(
+                    entry if argv else "<empty>"))
         data_dir = settings.data / "products" / project["id"] / "data"
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         env = local_env()
         env.update(expand_env(profile.env, data_dir=data_dir, app_dir=source))
         env.update({"PORT": str(args.port), "NITRO_PORT": str(args.port), "HOST": "127.0.0.1",
                     "NITRO_HOST": "127.0.0.1", "NUXT_TELEMETRY_DISABLED": "1"})
-        argv = [a.replace("{port}", str(args.port)) for a in profile.serve_argv]
         print(json.dumps({"project": project["name"], "url": f"http://127.0.0.1:{args.port}",
                           "data": str(data_dir), "env": sorted(profile.env)}, indent=2), flush=True)
         os.chdir(source)
