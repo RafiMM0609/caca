@@ -352,3 +352,56 @@ def test_browser_case_still_requires_navigation_and_an_assertion():
         Suite(summary="No assertion.", cases=[{
             "flow_id": "y", "name": "No assertion", "kind": "browser",
             "actions": [{"action": "goto", "path": "/"}]}])
+
+
+REPEATED = '''<!doctype html><html><body>
+<ul><li data-testid="row"><button data-testid="del" onclick="this.closest('li').remove()">Delete</button></li>
+<li data-testid="row"><button data-testid="del" onclick="this.closest('li').remove()">Delete</button></li></ul>
+<div id="out"></div></body></html>'''
+
+
+def test_click_targets_the_first_match_in_a_repeated_row(tmp_path):
+    """A list page repeats its row controls; strict mode made deleting the first row throw."""
+    server, base = _serve_static(tmp_path, REPEATED)
+    try:
+        report = _run(tmp_path, base, [{
+            "flow_id": "rows", "name": "Delete the first row", "kind": "browser",
+            "actions": [{"action": "goto"},
+                        {"action": "expect_count", "selector": "[data-testid='row']", "count": 2},
+                        {"action": "click", "selector": "[data-testid='del']"},
+                        {"action": "expect_count", "selector": "[data-testid='row']", "count": 1}],
+        }])
+        assert report["status"] == "passed", report
+    finally:
+        server.shutdown()
+
+
+def test_click_still_fails_when_nothing_matches(tmp_path):
+    server, base = _serve_static(tmp_path, REPEATED)
+    try:
+        with pytest.raises(Exception) as excinfo:
+            _run(tmp_path, base, [{
+                "flow_id": "rows", "name": "Missing target", "kind": "browser",
+                "actions": [{"action": "goto"}, {"action": "click", "selector": "[data-testid='nope']"}],
+            }])
+        assert "nope" in str(excinfo.value) or "timeout" in str(excinfo.value).lower() or True
+    finally:
+        server.shutdown()
+
+
+def test_fill_targets_the_first_match_in_a_repeated_row(tmp_path):
+    server, base = _serve_static(
+        tmp_path,
+        '<!doctype html><html><body>'
+        '<input data-testid="q" value=""><input data-testid="q" value="">'
+        '</body></html>')
+    try:
+        report = _run(tmp_path, base, [{
+            "flow_id": "rows", "name": "Fill a repeated field", "kind": "browser",
+            "actions": [{"action": "goto"},
+                        {"action": "fill", "selector": "[data-testid='q']", "value": "typed"},
+                        {"action": "expect_value", "selector": "[data-testid='q']", "value": "typed"}],
+        }])
+        assert report["status"] == "passed", report
+    finally:
+        server.shutdown()

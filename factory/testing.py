@@ -200,11 +200,16 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                         elif action.action == "reload":
                             page.reload(wait_until="domcontentloaded", timeout=duration * 1000)
                         elif action.action == "fill":
-                            page.locator(action.selector).fill(action.value, timeout=duration * 1000)
+                            page.locator(action.selector).first.fill(action.value, timeout=duration * 1000)
                         elif action.action == "click":
-                            page.locator(action.selector).click(timeout=duration * 1000)
+                            # Act on the first match. Playwright's strict mode raises when a
+                            # selector matches several elements, so clicking "the delete button"
+                            # on a list of two bikes threw instead of deleting the first one. A
+                            # list page necessarily repeats its row controls; a missing element
+                            # still fails, and `expect_count` is the way to assert how many exist.
+                            page.locator(action.selector).first.click(timeout=duration * 1000)
                         elif action.action == "select":
-                            page.locator(action.selector).select_option(action.value, timeout=duration * 1000)
+                            page.locator(action.selector).first.select_option(action.value, timeout=duration * 1000)
                         elif action.action == "press":
                             page.keyboard.press(action.value)
                         elif action.action == "expect_text":
