@@ -311,3 +311,44 @@ def test_empty_expect_text_is_rejected_as_vacuous(value):
     """An empty pattern matches anything, so it silently asserts nothing."""
     with pytest.raises(ValueError, match="non-empty"):
         Action(action="expect_text", selector="#x", value=value)
+
+
+def test_browser_case_may_seed_data_before_navigating():
+    """A UI case often needs a row to exist; setup requests must precede navigation.
+
+    Rejecting every request in a browser case forced the tester to write cases that could
+    only ever test an empty page, and three otherwise-valid suites were discarded.
+    """
+    suite = Suite(summary="Seed then assert.", cases=[{
+        "flow_id": "seeded", "name": "Seeded list renders", "kind": "browser",
+        "actions": [
+            {"action": "request", "method": "POST", "path": "/api/items", "body": {"n": 1}, "status": 201},
+            {"action": "goto", "path": "/"},
+            {"action": "expect_count", "selector": "[data-testid='row']", "count": 1},
+        ],
+    }])
+    assert suite.cases[0].actions[0].action == "request"
+
+
+def test_browser_case_cannot_request_after_navigating():
+    """Setup must finish before navigation, or a UI assertion could be satisfied by an API call."""
+    with pytest.raises(ValueError, match="precede navigation"):
+        Suite(summary="Bad order.", cases=[{
+            "flow_id": "bad", "name": "Request after goto", "kind": "browser",
+            "actions": [
+                {"action": "goto", "path": "/"},
+                {"action": "request", "path": "/api/items"},
+                {"action": "expect_visible", "selector": "h1"},
+            ],
+        }])
+
+
+def test_browser_case_still_requires_navigation_and_an_assertion():
+    with pytest.raises(ValueError, match="navigate"):
+        Suite(summary="No goto.", cases=[{
+            "flow_id": "x", "name": "No navigation", "kind": "browser",
+            "actions": [{"action": "expect_visible", "selector": "h1"}]}])
+    with pytest.raises(ValueError, match="browser assertion"):
+        Suite(summary="No assertion.", cases=[{
+            "flow_id": "y", "name": "No assertion", "kind": "browser",
+            "actions": [{"action": "goto", "path": "/"}]}])

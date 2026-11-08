@@ -94,10 +94,18 @@ class TestCase(StrictModel):
         if self.kind == "api" and any(step.action != "request" for step in self.actions):
             raise ValueError("API cases contain requests only")
         if self.kind == "browser":
-            if self.actions[0].action != "goto" or any(step.action == "request" for step in self.actions):
-                raise ValueError("Browser case must start by navigating and contain browser actions only")
-            if not any(step.action in BROWSER_ASSERTIONS for step in self.actions):
-                raise ValueError("Browser case requires an assertion")
+            # Leading request actions are setup: a UI case often needs a row to exist before
+            # the page is opened, and the alternative is a browser case that can only ever test
+            # an empty page. Setup must finish before navigation; after `goto` the case is pure
+            # browser work, so a UI assertion can never be satisfied by an API response.
+            actions = self.actions
+            first_browser = next((i for i, step in enumerate(actions) if step.action != "request"), None)
+            if first_browser is None or actions[first_browser].action != "goto":
+                raise ValueError("Browser case must start with optional request setup and then navigate")
+            if any(step.action == "request" for step in actions[first_browser:]):
+                raise ValueError("Browser case requests are setup only and must precede navigation")
+            if not any(step.action in BROWSER_ASSERTIONS for step in actions[first_browser:]):
+                raise ValueError("Browser case requires a browser assertion after navigation")
         return self
 
 
