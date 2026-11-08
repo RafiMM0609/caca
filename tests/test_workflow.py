@@ -208,3 +208,43 @@ def test_recovery_reconciles_workers_of_already_finished_jobs(store, project, pl
 
     states = {row["task_id"]: row["state"] for row in store.workers_for(claimed["id"])}
     assert states["task-a"] == "interrupted"
+
+
+class FlakyPlanner:
+    """Fails the planner N times, then returns a valid plan. Mirrors a real provider."""
+
+    def __init__(self, plan, fail_times):
+        self.plan, self.fail_times, self.calls = plan, fail_times, 0
+
+    def generate(self, role, instruction, context, schema, cancelled):
+        if role == "planner":
+            self.calls += 1
+            if self.calls <= self.fail_times:
+                error = ValueError("Model returned no text")
+                error.output = "{}"
+                raise error
+            return self.plan
+        if role == "review":
+            return Review(approved=True, findings=[])
+        return self.plan
+
+
+def test_planner_retries_a_malformed_response(settings, store, project, plan):
+    """One bad generation must not end the run; the tester has the same retry."""
+    from factory.engine import Engine
+    agent = FlakyPlanner(plan, fail_times=1)
+    job = store.enqueue(project["id"], "plan", next_state="planning")
+    Engine(settings, store, agent, TestVerifier()).process(store.claim())
+    assert agent.calls == 2, "the planner must retry once before giving up"
+    assert store.one("SELECT state FROM jobs WHERE id=?", (job["id"],))["state"] == "succeeded"
+    kinds = [row["kind"] for row in store.all("SELECT kind FROM events WHERE job_id=?", (job["id"],))]
+    assert "plan.attempt_failed" in kinds, "a failed attempt must be recorded as evidence"
+
+
+def test_planner_gives_up_after_the_bounded_retries(settings, store, project, plan):
+    from factory.engine import Engine
+    agent = FlakyPlanner(plan, fail_times=99)
+    job = store.enqueue(project["id"], "plan", next_state="planning")
+    Engine(settings, store, agent, TestVerifier()).process(store.claim())
+    assert agent.calls == settings.max_repairs + 1, "retries are bounded, not infinite"
+    assert store.one("SELECT state FROM jobs WHERE id=?", (job["id"],))["state"] == "failed"

@@ -20,6 +20,32 @@ from .workspace import atomic_json, package
 
 logger = logging.getLogger(__name__)
 
+PLANNER_PROMPT = (
+    "Design a concrete task plan with acceptance criteria. "
+    "Tasks form a DAG: use depends_on to declare real dependencies. Tasks "
+    "whose dependencies are satisfied run in parallel as separate workers, "
+    "so leave depends_on empty for work that can proceed independently, and "
+    "declare an ordering only where the work truly requires it. Each task "
+    "must be achievable by one worker on its own worktree. "
+    "List unresolved business questions in questions. Do not invent requirements. "
+    "The static profile serves plain HTML/CSS/JS, with index.html at the root. "
+    "Other profiles must follow the operator's verification contract. "
+    "Persistence: unless the brief explicitly names an external database "
+    "(for example Supabase, Postgres, MySQL or any hosted database with a "
+    "hostname, port and password), the application must store data in a local "
+    "SQLite file. The environment provides DATABASE_URL pointing at that file "
+    "and DATA_DIR pointing at the directory that holds it; both survive "
+    "restarts and must be read rather than hardcoded. Only choose an external "
+    "database when the brief asks for one by name. "
+    "For tester-enabled profiles include test_flows with explicit API routes/status/JSON "
+    "and browser routes/selectors/actions/expected outcomes. These are the independent tester contract. "
+    "Every browser flow MUST list the selectors it depends on in its `selectors` map "
+    "(name -> CSS selector), and the task instructions must use exactly those same "
+    "selectors. Declare every state explicitly, including fields shown while a row is "
+    "being edited: the worker builds what the instructions name and the tester asserts "
+    "only the declared selectors, so an undeclared selector makes a correct page fail."
+)
+
 
 class Engine:
     def __init__(self, settings, store=None, agent=None, verifier=None, memory=None, deployer=None, worker=None):
@@ -72,30 +98,33 @@ class Engine:
             if job["kind"] == "plan":
                 context = {"brief": project["brief"], "profile": project["profile"], "verification": settings.profiles[project["profile"]].model_dump(),
                            "memory": self.memory_operation(project_id, job_id, "search", project["brief"])}
-                plan = self.generate(job_id, "planner", "Design a concrete task plan with acceptance criteria. "
-                                           "Tasks form a DAG: use depends_on to declare real dependencies. Tasks "
-                                           "whose dependencies are satisfied run in parallel as separate workers, "
-                                           "so leave depends_on empty for work that can proceed independently, and "
-                                           "declare an ordering only where the work truly requires it. Each task "
-                                           "must be achievable by one worker on its own worktree. "
-                                           "List unresolved business questions in questions. Do not invent requirements. "
-                                           "The static profile serves plain HTML/CSS/JS, with index.html at the root. "
-                                           "Other profiles must follow the operator's verification contract. "
-                                           "Persistence: unless the brief explicitly names an external database "
-                                           "(for example Supabase, Postgres, MySQL or any hosted database with a "
-                                           "hostname, port and password), the application must store data in a local "
-                                           "SQLite file. The environment provides DATABASE_URL pointing at that file "
-                                           "and DATA_DIR pointing at the directory that holds it; both survive "
-                                           "restarts and must be read rather than hardcoded. Only choose an external "
-                                           "database when the brief asks for one by name. "
-                                           "For tester-enabled profiles include test_flows with explicit API routes/status/JSON "
-                                           "and browser routes/selectors/actions/expected outcomes. These are the independent tester contract. "
-                                           "Every browser flow MUST list the selectors it depends on in its `selectors` map "
-                                           "(name -> CSS selector), and the task instructions must use exactly those same "
-                                           "selectors. Declare every state explicitly, including fields shown while a row is "
-                                           "being edited: the worker builds what the instructions name and the tester asserts "
-                                           "only the declared selectors, so an undeclared selector makes a correct page fail.",
-                                           context, Plan, cancelled)
+                # The planner gets the same bounded retry the tester already has. A single
+                # malformed generation used to fail the entire job on the first attempt, even
+                # though an identical call seconds later could succeed. Model output is not
+                # deterministic, so one bad sample must not end a run.
+                plan = None
+                for attempt in range(settings.max_repairs + 1):
+                    if cancelled():
+                        raise Cancelled("Cancelled while planning")
+                    context["previous_attempt_note"] = (
+                        "" if not attempt else
+                        "Your previous response could not be parsed as the required plan schema. "
+                        "Return only JSON matching the schema: a DAG of tasks with acceptance "
+                        "criteria, and one test_flow per observable behaviour with its selectors.")
+                    try:
+                        plan = self.generate(job_id, "planner", PLANNER_PROMPT, context, Plan, cancelled)
+                    except Cancelled:
+                        raise
+                    except Exception as exc:
+                        (work / f"plan-attempt-{attempt}.txt").write_text(
+                            str(getattr(exc, "output", "") or exc)[-100000:])
+                        store.event(project_id, job_id, "plan.attempt_failed",
+                                    {"attempt": attempt + 1, "reason": type(exc).__name__})
+                        if attempt >= settings.max_repairs:
+                            raise
+                        self._spacing(cancelled)
+                    else:
+                        break
                 atomic_json(work / "plan.json", plan.model_dump())
                 with store.tx() as db:
                     db.execute("UPDATE projects SET plan=?,revision=revision+1,state='awaiting_plan' WHERE id=?",

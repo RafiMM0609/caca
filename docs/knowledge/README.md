@@ -5,6 +5,7 @@ This folder preserves the reasoning and project history that cannot be inferred 
 | Document | Purpose |
 | --- | --- |
 | [Origin and decisions](origin-and-decisions.md) | Why the factory exists, which choices the owner made, and how scope evolved |
+| [Delivery plan](plan.md) | Gap analysis and the phased route from today to a dependable factory |
 | [Handoff](handoff.md) | Current code map, last validation evidence, gaps and continuation checklist |
 | [Architecture](../architecture.md) | Components, the parallel worker and merge model, and trust boundaries |
 | [Studio and tester](../studio-and-tester.md) | The editor journey and the tester's contract |
@@ -17,8 +18,8 @@ Maintain these documents when behavior or priorities change. Prefer dated facts 
 
 - The execution model is **planner-driven parallel Pi workers**: a plan DAG, one Pi harness worker per ready task in its own git worktree, review of each diff, and a merge barrier into a per-product git repository.
 - Each product owns a repository at `data/products/<project-id>`. SQLite holds workflow state; the repository holds client code and history.
-- Latest committed state is `5eb3318`. Check `git status` and `git log` rather than trusting this line.
-- The highest-value verification gap is the real Nuxt Studio journey, which has not been re-run since workers became parallel.
+- Check `git status` and `git log` rather than trusting a commit identifier written here.
+- **The parts are proven; the whole is not.** Live runs have produced a tested Nuxt site and a tested SQLite CRUD app, each passing independent API and browser acceptance cases, and the dashboard now shows waves and workers. But every published artifact came from a separately enqueued `verify` job: no single `build` job has ever run a plan through workers, verification and publication in one go. Closing that loop is Phase 0 of the [delivery plan](plan.md).
 
 Earlier checkpoints: the implementation before the parallel-worker change was pushed as `943f044` to the public `main` branch of [RafiMM0609/caca](https://github.com/RafiMM0609/caca). Commit identifiers here are historical checkpoints, not assertions about the current HEAD.
 
