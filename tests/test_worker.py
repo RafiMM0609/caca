@@ -15,7 +15,7 @@ from factory.config import Settings
 @pytest.fixture
 def settings(tmp_path):
     return Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
-                    model="test/model", omp="/usr/bin/true")
+                    model="test/model", pi="/usr/bin/true")
 
 
 @pytest.fixture
@@ -84,7 +84,7 @@ def test_live_worker_edits_a_real_worktree(tmp_path):
 
     settings = Settings(data=tmp_path / "data", operator_token="o" * 40, release_token="r" * 40,
                         model=os.environ.get("FACTORY_MODEL", ""),
-                        omp=os.environ.get("FACTORY_OMP", "pi"), agent_timeout=180)
+                        pi=os.environ.get("FACTORY_PI", "pi"), agent_timeout=180)
     root = products.ensure_repo(settings.data, "live",
                                 seed_files={"task.md": "Create out.txt containing exactly: done\n"})
     base = products.head_commit(root)

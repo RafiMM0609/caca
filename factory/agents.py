@@ -43,7 +43,7 @@ BASE_ENV = ("PATH", "HOME", "LANG", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "HTT
 class PiAgent:
     """Public Pi CLI (pi.dev) as a tool-free structured generation client.
 
-    Backs the factory's OMP worker interface with the maintained upstream release.
+    Backs the factory's Pi worker interface with the maintained upstream release.
     Pi runs one bounded model call per job stage: no tools, no session, no extensions
     and no project resources are discovered. The controller applies all file changes
     itself; generated commands execute only inside the configured verifier.
@@ -75,7 +75,7 @@ class PiAgent:
             # One print-mode invocation: one call, no tools, no session persistence,
             # no project trust. Budgets are reserved transactionally by the engine,
             # not by the CLI process.
-            argv = [settings.omp, "--print", "--mode", "json", "--model", model,
+            argv = [settings.pi, "--print", "--mode", "json", "--model", model,
                     "--no-tools", "--no-extensions", "--no-skills", "--no-mcp",
                     "--no-prompt-templates", "--no-themes", "--no-context-files",
                     "--no-session", "--no-approve"]
@@ -165,7 +165,7 @@ class PiWorker:
         with tempfile.TemporaryDirectory(dir=runtime) as directory:
             home = self.isolated_home(Path(directory))
             env = self.worker_env(home)
-            argv = [settings.omp, "--print", "--mode", "json", "--model", selected,
+            argv = [settings.pi, "--print", "--mode", "json", "--model", selected,
                     "--no-extensions", "--no-skills", "--no-mcp",
                     "--no-prompt-templates", "--no-themes", "--no-context-files",
                     "--no-session"]

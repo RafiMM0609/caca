@@ -42,7 +42,11 @@ Each worker gets a temporary `HOME`, `PI_CODING_AGENT_DIR` and `XDG_*` directori
 
 ## Verification and gates
 
-The verifier runs administrator-owned `commands` argv arrays (typically install and build) in a disposable copy of the product source, then optional operator-owned `checks_argv` scripts resolved against the configured `checks_dir`. The active Nuxt profile runs `checks/secret_scan.py`, which blocks credential-shaped values and the exact values of configured secrets from appearing in a built artifact. After the build, when a tester suite exists, the verifier starts the application with `serve_argv`, waits for `readiness_path`, and executes the API and Playwright cases.
+The verifier runs administrator-owned `commands` argv arrays (typically install and build) in a disposable copy of the product source, then optional operator-owned `checks_argv` scripts resolved against the configured `checks_dir`. The active Nuxt profile runs two: `checks/secret_scan.py`, which blocks credential-shaped values and the
+exact values of configured secrets from appearing in a built artifact, and `checks/js_syntax.py`, which
+parses every shipped JavaScript file with `node --check` so an artifact that does not parse cannot be
+published. A native profile that names a `checks_dir` without any `checks_argv` is rejected at startup,
+because that combination runs nothing while appearing validated. After the build, when a tester suite exists, the verifier starts the application with `serve_argv`, waits for `readiness_path`, and executes the API and Playwright cases.
 
 The tester contract (`factory/testing.py`) supports `GET`/`HEAD`/`POST`/`PUT`/`PATCH`/`DELETE` with JSON assertions, and browser `goto`, `reload`, `fill`, `select`, `press`, `click`, `expect_text`, `expect_value`, `expect_visible`, `expect_hidden`, `expect_count` and `expect_url`. A browser case may run `request` actions as setup before `goto` and nothing but browser actions after it. `expect_text` matches case-insensitively across any matched element, `expect_value` reads a field's value, and `click`/`fill`/`select` act on the first match rather than failing under strict mode. Browser cases fail on uncaught page exceptions and on console errors; noise from the runner's own aborted external requests is filtered, and a reviewed case may opt out via `allow_console_errors`. Failures block publication.
 

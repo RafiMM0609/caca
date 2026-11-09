@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 @pytest.fixture
 def settings(tmp_path):
     config = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
-                      model="test/model", omp="/usr/bin/true",
+                      model="test/model", pi="/usr/bin/true",
                       profiles={"static": Profile(image=IMAGE, verify_argv=["python3", "/checks/static.py"],
                                                    checks_dir=str(ROOT / "checks"))})
     config.validate()

@@ -61,7 +61,7 @@ class FakeWorker:
 def env(tmp_path):
     from factory.config import Settings
     settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
-                        model="test/model", omp="/usr/bin/true", worker_concurrency=4)
+                        model="test/model", pi="/usr/bin/true", worker_concurrency=4)
     store = Store(tmp_path / "factory.sqlite3")
     project = store.create_project(ProjectInput(name="Parallel demo", brief="Build a product with several parts."))
     return settings, store, project

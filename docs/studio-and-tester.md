@@ -28,7 +28,7 @@ set -a
 set +a
 export FACTORY_CONFIG="$PWD/examples/config-studio-linux.json"
 export FACTORY_ALLOW_NATIVE=1
-export FACTORY_OMP=/absolute/path/to/pi
+export FACTORY_PI=/absolute/path/to/pi
 export FACTORY_MODEL=provider/model
 # Optional: separate model choices for reviewer and tester.
 # export FACTORY_REVIEW_MODEL=provider/model

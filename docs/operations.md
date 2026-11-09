@@ -27,7 +27,10 @@ Worker worktrees may be left behind by a crash. They are safe to remove when no 
 
 Profiles are administrator-controlled.
 
-**Native (default for the Nuxt profile).** `commands` is an ordered list of argv arrays run in a disposable copy of the product source, with a shared wall-clock deadline and bounded output. `checks_dir` plus `checks_argv` add operator-owned checks that run after the build; `{checks}` in an argument expands to the resolved checks directory. A relative `checks_dir` (the shipped default is `"checks"`) is resolved against the checkout that contains the `factory` package, never against the working directory of whichever process started the API or a scheduler — do not make it CWD-dependent, because that silently runs no operator checks while still looking validated. `artifact_dir` names the directory exported as the artifact. `serve_argv`, `readiness_path` and `qa_timeout` drive the tester run. Native execution requires `FACTORY_ALLOW_NATIVE=1` and is **not** a sandbox.
+**Native (default for the Nuxt profile).** `commands` is an ordered list of argv arrays run in a disposable copy of the product source, with a shared wall-clock deadline and bounded output. `checks_dir` plus `checks_argv` add operator-owned checks that run after the build; `{checks}` in an argument expands to the resolved checks directory. A relative `checks_dir` (the shipped default is `"checks"`) is resolved against the checkout that contains the `factory` package, never against the working directory of whichever process started the API or a scheduler — do not make it CWD-dependent, because that silently runs no operator checks while still looking validated. `checks_dir` without `checks_argv` is rejected at startup: a directory with no checks runs nothing while
+looking validated, which is exactly how the native profile once shipped with no operator checks at all.
+`artifact_dir` names the directory exported as the artifact. `serve_argv`, `readiness_path` and `qa_timeout`
+drive the tester run. Native execution requires `FACTORY_ALLOW_NATIVE=1` and is **not** a sandbox.
 
 Keep the checkout path free of spaces. Nuxt Content percent-encodes a space into `%20` and then cannot resolve its own path, so a build in `.../Default Project/...` succeeds while the rendered page and browser acceptance cases fail. This is not a space-escaping bug in the factory's argv handling; the argv arrays are already passed as arrays.
 
@@ -36,6 +39,25 @@ Keep the checkout path free of spaces. Nuxt Content percent-encodes a space into
 Two data directories exist and they are not interchangeable. **Verification** gets a throwaway directory inside its disposable build tree, so a case that creates a record and then lists records sees the same result every run instead of inheriting rows from the previous build. **`factory run <project>`** serves the published artifact against `data/product-data/<id>`, which sits **outside** the product's git working tree: a SQLite file inside the repository could be committed by `git add -A`, would be clobbered by the next checkout, and would ship in the artifact. A generated application may also legitimately own a `data/` directory of its own, so an inside-the-repo path would collide with real source. `app_data_dir()` in `factory/local_app.py` is the single definition; do not recompute the path elsewhere. `serve_argv` resolves against the artifact root, which already corresponds to `artifact_dir`, so a leading `release/` on the entry point is stripped rather than doubled.
 
 The default stack for a new product is a local SQLite file, and the planner and worker briefs say so explicitly. An external database is chosen only when the brief names one (Supabase, Postgres, MySQL, or any hosted database with a hostname and password). The Docker verification profile has no persistent mount, so treat persistence as a native-runner capability.
+
+The shipped checks are `checks/secret_scan.py` and `checks/js_syntax.py`.
+
+- **`secret_scan.py <artifact_dir>`** blocks credential-shaped strings and the exact values of
+  configured secrets from appearing in the built artifact. It is a pattern and exact-value scan over
+  text files up to 20 MB, not entropy analysis: an obfuscated or split credential will pass.
+- **`js_syntax.py [--allow-empty] <artifact_dir>`** runs `node --check` on every `.js`/`.mjs`/`.cjs`
+  file in the artifact. `node --check` parses without executing, so generated application code is
+  never run by this check. It matters because a build can pass while shipping JavaScript that does
+  not parse — a stale bundler cache, a truncated generated file, or a malformed entry point that
+  `npm run build` never evaluated. Without `--allow-empty`, an artifact containing no JavaScript is
+  a **failure**: a Nuxt artifact with no JS means the path or the layout is wrong, and reporting
+  PASS would be a false clearance. Pass `--allow-empty` in a profile whose artifact legitimately
+  ships no JavaScript. If `node` is not on PATH both the check and the build fail loudly rather
+  than clearing the artifact.
+
+`factory doctor` prints the resolved `checks_dir`, whether it exists, and the exact `checks_argv`
+for each profile, so what will run is visible before a build instead of being discovered in the
+evidence afterwards.
 
 **Docker (optional, legacy).** Images must be digest pinned, pre-pulled, and contain Python 3 plus any application toolchain. Verification has no network access, so dependencies must be preinstalled in an audited image; do not enable network to make arbitrary generated install scripts work. Checks execute in `/work/app`, see source at `/source` read-only and checks at `/checks` read-only, and must export deployable files to `/output`. For Docker profiles `/output` is the export contract and `artifact_dir` is not used.
 

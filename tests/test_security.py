@@ -9,7 +9,7 @@ from factory.process import Cancelled, ProcessError, run
 from factory.workspace import extract, package
 
 
-@pytest.mark.parametrize("name", ["../escape", "/etc/passwd", "a/../../x", "a\\b", ".git/config", ".omp/config.yml", ".env", "a/.env.production", "./a", "a//b", "a\nname", ".", ""])
+@pytest.mark.parametrize("name", ["../escape", "/etc/passwd", "a/../../x", "a\\b", ".git/config", ".pi/config.yml", ".env", "a/.env.production", "./a", "a//b", "a\nname", ".", ""])
 def test_reject_unsafe_generated_paths(name):
     with pytest.raises(ValueError):
         safe_path(name)

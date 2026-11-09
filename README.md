@@ -39,7 +39,7 @@ set -a
 set +a
 export FACTORY_CONFIG="$PWD/examples/config-studio-linux.json"
 export FACTORY_ALLOW_NATIVE=1
-export FACTORY_OMP=/absolute/path/to/pi
+export FACTORY_PI=/absolute/path/to/pi
 export FACTORY_MODEL=opencode-go/deepseek-v4.1-flash
 uv run factory api
 # In another terminal with the same environment:

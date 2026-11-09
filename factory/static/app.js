@@ -32,7 +32,7 @@ async function refresh() {
     $("memory-status").textContent = health.memorix_enabled ? "Memorix" : "Disabled";
     const missing = [];
     if (!health.model_configured) missing.push("model configuration");
-    if (!health.omp_installed) missing.push("OMP installation");
+    if (!health.pi_installed) missing.push("Pi installation");
     if (!health.workers.build_heartbeat) missing.push("build worker");
     if (!health.profiles.length) missing.push("verification profile");
     $("readiness").hidden = !missing.length;
@@ -61,7 +61,7 @@ function renderProject(project, events) {
   $("project-profile").textContent = project.profile.toUpperCase() + " / REVISION " + project.revision;
   $("project-state").replaceWith(Object.assign(badge(project.state), { id: "project-state" }));
   const plan = parsed(project.plan), artifact = parsed(project.artifact);
-  $("generate").disabled = active || !status.model_configured || !status.omp_installed;
+  $("generate").disabled = active || !status.model_configured || !status.pi_installed;
   $("approve").disabled = active || !plan || plan.questions.length > 0 || !["awaiting_plan", "failed", "interrupted", "cancelled"].includes(project.state);
   $("plan-summary").textContent = plan ? plan.summary : "Ask the planner to turn this brief into an implementation plan, or save a reviewed plan below.";
   $("plan-questions").replaceChildren();

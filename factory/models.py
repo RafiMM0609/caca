@@ -115,7 +115,7 @@ def safe_path(name: str) -> str:
     path = PurePosixPath(name)
     if (not name or name == "." or len(name) > 240 or path.is_absolute() or "\\" in name
             or any(ord(c) < 32 for c in name) or str(path) != name
-            or any(p in ("..", ".git", ".omp", ".memorix", ".ssh") for p in path.parts)
+            or any(p in ("..", ".git", ".pi", ".memorix", ".ssh") for p in path.parts)
             or any(_is_real_env_file(p) for p in path.parts)):
         raise ValueError(f"Disallowed file path: {name!r}")
     return name
@@ -138,7 +138,7 @@ class ProjectInput(StrictModel):
 # operator's environment, and generated apps must not receive factory or provider tokens.
 WITHHELD_ENV_KEYS = frozenset({
     "FACTORY_OPERATOR_TOKEN", "FACTORY_RELEASE_TOKEN", "FACTORY_DATA", "FACTORY_CONFIG",
-    "FACTORY_OMP", "FACTORY_MODEL", "FACTORY_CHECKS_DIR",
+    "FACTORY_PI", "FACTORY_MODEL", "FACTORY_CHECKS_DIR",
     "OPENCODE_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY",
     "GEMINI_API_KEY", "OPENROUTER_API_KEY", "ZAI_API_KEY", "MINIMAX_API_KEY",
     "DEEPSEEK_API_KEY", "KIMI_API_KEY", "COPILOT_GITHUB_TOKEN",
@@ -198,6 +198,14 @@ class Profile(StrictModel):
                 raise ValueError("Native profiles require nonempty command argument arrays")
             if self.checks_argv and not self.checks_dir:
                 raise ValueError("Native checks_argv requires an operator-owned checks_dir")
+            # A profile that names a checks directory but lists no checks looks validated
+            # while running none. That exact mismatch shipped before: `checks_dir` was only
+            # ever read by the Docker verifier, so the active native profile ran zero
+            # operator checks and nothing said so. Refusing the combination makes the
+            # mistake a startup error instead of a false sense of coverage.
+            if self.checks_dir and not self.checks_argv:
+                raise ValueError("Native checks_dir requires checks_argv; a checks directory "
+                                 "with no checks runs nothing while appearing validated")
             return self
         if not self.verify_argv or not self.checks_dir:
             raise ValueError("Docker profiles require checks and verify_argv")

@@ -99,7 +99,7 @@ def create_app(settings=None):
     def status(_=Depends(role)):
         pulses = {r["key"]: time.time() - float(r["value"]) < 15 for r in store.all("SELECT * FROM runtime")}
         return {"workers": pulses, "model_configured": bool(settings.model),
-                "omp_installed": bool(shutil.which(settings.omp)), "memorix_enabled": bool(settings.memorix),
+                "pi_installed": bool(shutil.which(settings.pi)), "memorix_enabled": bool(settings.memorix),
                 "profiles": list(settings.profiles), "targets": list(settings.targets),
                 "profile_features": {key: {"studio": value.studio, "tester": value.tester} for key, value in settings.profiles.items()},
                 "mode": "single-operator", "version": "0.1.0"}
@@ -126,8 +126,8 @@ def create_app(settings=None):
 
     @app.post("/api/projects/{project}/plan", status_code=202)
     def plan(project: str, _=Depends(operator)):
-        if not settings.model or not shutil.which(settings.omp):
-            raise HTTPException(503, "Configure OMP and FACTORY_MODEL before requesting an AI plan")
+        if not settings.model or not shutil.which(settings.pi):
+            raise HTTPException(503, "Configure Pi and FACTORY_MODEL before requesting an AI plan")
         return store.enqueue(project, "plan", allowed={"draft", "awaiting_plan", "ready", "failed", "cancelled", "interrupted"},
                              next_state="planning")
 

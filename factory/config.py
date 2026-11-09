@@ -11,7 +11,7 @@ class Settings:
     data: Path
     operator_token: str
     release_token: str
-    omp: str = "omp"
+    pi: str = "pi"
     model: str = ""
     review_model: str = ""
     tester_model: str = ""
@@ -34,7 +34,7 @@ class Settings:
             data=data,
             operator_token=os.environ.get("FACTORY_OPERATOR_TOKEN", ""),
             release_token=os.environ.get("FACTORY_RELEASE_TOKEN", ""),
-            omp=os.environ.get("FACTORY_OMP", "omp"),
+            pi=os.environ.get("FACTORY_PI", "pi"),
             model=os.environ.get("FACTORY_MODEL", ""),
             review_model=os.environ.get("FACTORY_REVIEW_MODEL", ""),
             tester_model=os.environ.get("FACTORY_TESTER_MODEL", ""),

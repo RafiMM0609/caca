@@ -25,7 +25,7 @@ set -a
 set +a
 export FACTORY_CONFIG="$PWD/examples/config-native-linux.json"
 export FACTORY_ALLOW_NATIVE=1
-export FACTORY_OMP=/absolute/path/to/pi
+export FACTORY_PI=/absolute/path/to/pi
 export FACTORY_MODEL=provider/model
 uv run factory api
 # In another terminal with the same environment:
@@ -40,7 +40,7 @@ Note that the `node` example does not configure operator checks. The Studio prof
 
 **2026-11-09 (current, re-measured at `3e49524`).**
 
-- `pytest -q`: **161 passed, 3 skipped** (164 collected), 1 upstream Starlette/httpx deprecation warning. Two skips are Docker integration tests; the third is the opt-in live worker test, which passed when run separately with `FACTORY_LIVE_WORKER=1`.
+- `pytest -q`: **169 passed, 3 skipped** (172 collected), 1 upstream Starlette/httpx deprecation warning. Two skips are Docker integration tests; the third is the opt-in live worker test, which passed when run separately with `FACTORY_LIVE_WORKER=1`.
 - `node --test tests/workers.test.cjs`: **15 passed**.
 - `ruff check factory tests scripts/validate_studio_journey.py`: passed.
 - `node --check` on both dashboard scripts: passed.

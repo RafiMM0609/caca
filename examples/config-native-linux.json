@@ -19,7 +19,16 @@
         ]
       ],
       "artifact_dir": "dist",
-      "timeout": 600
+      "timeout": 600,
+      "checks_dir": "checks",
+      "checks_argv": [
+        [
+          "python3",
+          "{checks}/js_syntax.py",
+          "--allow-empty",
+          "dist"
+        ]
+      ]
     }
   },
   "targets": {}

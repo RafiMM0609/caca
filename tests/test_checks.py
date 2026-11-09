@@ -135,10 +135,23 @@ def test_example_profiles_wire_real_checks():
     for name in ("config-studio-linux.json", "config-native-linux.json"):
         data = json.loads((ROOT / "examples" / name).read_text())
         profile = Profile.model_validate(next(iter(data["profiles"].values())))
-        if profile.runner == "native" and profile.tester:
-            assert profile.checks_argv, f"{name} should run operator-owned checks"
-            assert profile.checks_dir, f"{name} should name a checks directory"
-            assert any("secret_scan" in " ".join(argv) for argv in profile.checks_argv)
+        assert profile.checks_argv, f"{name} should run operator-owned checks"
+        assert profile.checks_dir, f"{name} should name a checks directory"
+
+
+def test_the_studio_profile_runs_the_full_check_set():
+    """The shipped editing profile is the one an operator actually uses; guard its gates."""
+    data = json.loads((ROOT / "examples" / "config-studio-linux.json").read_text())
+    profile = Profile.model_validate(data["profiles"]["nuxt-studio"])
+    joined = [" ".join(argv) for argv in profile.checks_argv]
+    assert any("secret_scan" in line for line in joined), "a leaking build must be blocked"
+    assert any("js_syntax" in line for line in joined), "unparseable JS must be blocked"
+
+
+def test_native_checks_dir_without_checks_argv_is_rejected():
+    """A checks directory with no checks runs nothing while appearing validated."""
+    with pytest.raises(ValueError, match="checks_argv"):
+        Profile(runner="native", commands=[["true"]], checks_dir=str(ROOT / "checks"))
 
 
 def test_relative_checks_dir_resolves_against_the_checkout_not_the_cwd(tmp_path, monkeypatch):
@@ -208,7 +221,7 @@ def test_operator_check_blocks_publication_of_a_leaking_build(tmp_path, monkeypa
         monkeypatch.setenv("FACTORY_CHROMIUM", executable)
 
     settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
-                        model="test/model", omp="/usr/bin/true",
+                        model="test/model", pi="/usr/bin/true",
                         profiles={"nativex": Profile(
                             runner="native", commands=[["node", "build.cjs"]], artifact_dir="dist",
                             tester=True, serve_argv=["node", "server.cjs"], readiness_path="/api/health",
@@ -242,3 +255,55 @@ def test_operator_check_blocks_publication_of_a_leaking_build(tmp_path, monkeypa
 def shutil_which_chromium():
     import shutil
     return shutil.which("chromium") or shutil.which("google-chrome")
+
+
+# --- js_syntax check ----------------------------------------------------------------
+
+JS_SYNTAX = ROOT / "checks" / "js_syntax.py"
+
+
+def js_syntax(tmp_path, files, *args, env=None):
+    root = tmp_path / "artifact"
+    root.mkdir(parents=True, exist_ok=True)
+    for name, content in files.items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    environ = {"PATH": "/usr/bin:/bin:/usr/local/bin", **(env or {})}
+    return subprocess.run([sys.executable, str(JS_SYNTAX), *args, str(root)],
+                          capture_output=True, text=True, env=environ)
+
+
+def test_js_syntax_passes_parseable_files(tmp_path):
+    result = js_syntax(tmp_path, {"ok.js": "const a = 1;\n", "_nuxt/app.mjs": "export default 1;\n"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS" in result.stdout
+
+
+def test_js_syntax_blocks_an_unparseable_file(tmp_path):
+    """A build can succeed while shipping JS that does not parse; the gate must catch it."""
+    result = js_syntax(tmp_path, {"ok.js": "const a = 1;\n", "broken.mjs": "const b = ;\n"})
+    assert result.returncode == 1
+    assert "SYNTAX ERROR" in result.stdout
+    assert "broken.mjs" in result.stdout
+
+
+def test_js_syntax_treats_an_empty_artifact_as_a_failure_by_default(tmp_path):
+    """"No files matched" is not "no syntax errors": an empty scan usually means a bad path."""
+    result = js_syntax(tmp_path, {"index.html": "<h1>no js here</h1>"})
+    assert result.returncode == 1
+    assert "no JavaScript files found" in result.stderr
+
+
+def test_js_syntax_allows_an_empty_artifact_when_the_profile_says_so(tmp_path):
+    result = js_syntax(tmp_path, {"index.html": "<h1>plain html</h1>"}, "--allow-empty")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--allow-empty" in result.stdout
+
+
+def test_js_syntax_does_not_pass_silently_without_node(tmp_path, monkeypatch):
+    """A gate that cannot run must fail, never report a clean bill of health."""
+    result = js_syntax(tmp_path, {"ok.js": "const a = 1;\n"},
+                       env={"PATH": str(tmp_path / "empty-bin")})
+    assert result.returncode != 0
+    assert "node is not on PATH" in result.stderr

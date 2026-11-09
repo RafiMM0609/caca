@@ -100,15 +100,34 @@ def main():
         Store(settings.data / "factory.sqlite3").backup(destination)
         print("SQLite snapshot verified. Back up jobs and memory separately while workers are stopped.")
     elif args.command == "doctor":
-        report = {"omp": shutil.which(settings.omp), "model_configured": bool(settings.model),
+        report = {"pi": shutil.which(settings.pi), "model_configured": bool(settings.model),
                   "memorix": shutil.which(settings.memorix) if settings.memorix else "disabled",
                   "profiles": list(settings.profiles), "targets": list(settings.targets)}
+        # Show which operator-owned checks each profile will actually run. "Has a checks
+        # directory" and "runs checks" used to be different things, and a profile could
+        # look validated while running none of them; listing the argv makes that visible
+        # before a build rather than after a false PASS in the evidence.
+        from .verifier import resolve_checks_dir
+        report["profile_checks"] = {}
+        for name, profile in settings.profiles.items():
+            checks = resolve_checks_dir(profile) if profile.checks_dir else None
+            report["profile_checks"][name] = {
+                "checks_dir": str(checks) if checks else None,
+                "checks_dir_exists": bool(checks and checks.is_dir()),
+                "checks": [" ".join(argv) for argv in profile.checks_argv],
+                "tester": profile.tester,
+                "studio": profile.studio,
+                "runner": profile.runner,
+            }
         try:
             result = subprocess.run(["docker", "--host=unix:///var/run/docker.sock", "info", "--format", "{{.ServerVersion}}"],
                                     capture_output=True, timeout=10)
             report["docker_available"] = result.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             report["docker_available"] = False
+        # A binary the factory will invoke is worth confirming here: an unset FACTORY_PI
+        # used to default to a binary that did not exist, so this reports the resolved
+        # path rather than assuming the default works.
         print(json.dumps(report, indent=2))
     elif args.command == "reconcile":
         from .deploy import Deployer
