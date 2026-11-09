@@ -6,6 +6,7 @@ This folder preserves the reasoning and project history that cannot be inferred 
 | --- | --- |
 | [Origin and decisions](origin-and-decisions.md) | Why the factory exists, which choices the owner made, and how scope evolved |
 | [Delivery plan](plan.md) | Gap analysis and the phased route from today to a dependable factory |
+| [Design skills plan](design-skills-plan.md) | Making worker output look deliberate rather than generic: what Pi can load, and where each check belongs |
 | [Handoff](handoff.md) | Current code map, last validation evidence, gaps and continuation checklist |
 | [Architecture](../architecture.md) | Components, the parallel worker and merge model, and trust boundaries |
 | [Studio and tester](../studio-and-tester.md) | The editor journey and the tester's contract |
