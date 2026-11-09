@@ -196,6 +196,22 @@ Checkpoint: 2026-11-08, after commit `5eb3318`. Read [origin and decisions](orig
   D4 catches the mechanical floor; D3 is what can notice the rest; D5 (rebuild with skills) is
   the only thing that can show whether any of it improved.
 
+- **D5 closed: a five-task enterprise build, and what it does and does not prove** (2026-11-09).
+  A deliberately harder brief — design tokens, six required states, two routed pages, modal and
+  confirmation dialogs, search, filters, mobile card-stacking — built into 5 tasks over 4 waves
+  with **all five merged on attempt 1** and **6 of 6 acceptance cases passing first attempt**
+  (3 API, 3 browser). 1578.8s of a 10800s budget. The planner assigned `emil-design-eng` to the
+  foundation and both UI tasks and **no skill to either API task**, which is D1's per-task
+  design working on a real plan. Evidence screenshots are in `docs/knowledge/evidence/`.
+  Measured against the earlier artifact: **28 CSS custom properties versus 0**, 13 ad-hoc hex
+  colours versus 31, plus loading/empty/error states, toasts, inline validation, routing and
+  dialogs that v1 simply did not have.
+  **What this does not prove:** `ui_lint` passes *both* artifacts, because it only catches
+  mechanical defects and neither has any. Most of the gain is the brief, not the skill — the
+  prompt specified the tokens and states, and a skill cannot invent unstated requirements. And
+  brief and skills changed together, so **one confound remains**: separating "better brief" from
+  "better skill" needs the same enterprise brief with skills disabled, which has not been run.
+
 ## Code map
 
 | Area | Main files |

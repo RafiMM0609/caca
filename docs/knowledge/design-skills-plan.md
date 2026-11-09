@@ -122,12 +122,63 @@ colours, weak hierarchy, an unstyled form — and none of those are regex-detect
 the floor on the mistakes that are mechanical. D3, the reviewer, is the layer that can notice
 the rest, and D5 (rebuild with skills) is the only thing that can show whether it improved.
 
-## Phase D5 — Proof (medium)
+
 
 13. Rebuild the Perpustakaan Mini brief with design skills on the UI task, and compare against
     the recorded screenshot and artifact. Store both, because the claim being tested is
     "better", which needs a before and an after.
 14. Record what improved and what did not. A skill that changes nothing is worth knowing about.
+
+## Phase D5 — Proof (medium) — **DONE 2026-11-09**
+
+13. Rebuilt the brief with design skills on the UI tasks and compared against the earlier
+    artifact. **Done**, with a deliberately harder brief: "enterprise edition" — a design
+    token system, six required states (loading skeleton, empty, error, toast, inline
+    validation, submit-disabled), two routed pages, modal dialogs, a confirmation dialog,
+    search and filters, and mobile card-stacking at 360px.
+14. What improved and what did not, recorded below.
+
+### The build
+
+| | |
+| --- | --- |
+| Plan | 5 tasks, 4 waves, **all merged attempt 1** |
+| Worker time | 1578.8s of a 10800s budget (14.6%) |
+| Tests | **6 of 6 passed** first attempt — 3 API, 3 browser |
+| Artifact | 30 files, 244 KB |
+
+The planner assigned skills by task without being told to: `foundation` and both UI tasks got
+`emil-design-eng`, the two API tasks got **none**. That is D1's per-task design working as
+intended on a real plan.
+
+### Measured, not asserted
+
+Screenshots are in [evidence/](evidence/). The design gate was run on both artifacts.
+
+| | v1 (Proyek awal) | v2 (Enterprise) |
+| --- | --- | --- |
+| CSS custom properties | **0** | **28** |
+| Ad-hoc hex colours | 31 | 13 |
+| `ui_lint` findings | PASS | PASS |
+| States built | form + list | loading, empty, error, toast, inline validation, submit-disabled |
+| Routing | one page | `/` and `/buku`, active nav state |
+| Dialogs | none | modal form + delete confirmation |
+| Mobile 360px | unstyled wrap | table becomes stacked cards, toolbar vertical |
+
+**The honest reading.** v2 is a different class of product: token-driven, routed, with the
+states a real application needs, and every one of them verified by a browser test. But:
+
+- **`ui_lint` passes both.** The gate cannot tell them apart, exactly as predicted. It catches
+  mechanical defects, and neither artifact has any.
+- **Most of the improvement is the brief, not the skill.** The v2 prompt specified tokens,
+  states, routing and dialogs. A skill cannot invent requirements the operator never stated.
+  The skill's contribution is visible at the edges — the layered shadows, the negative
+  letter-spacing on headings, the explicit easing curve — and those are real but secondary.
+- **One confound remains.** The brief and the skills changed together, so this run cannot
+  separate "better brief" from "better skill". Separating them needs a run of the enterprise
+  brief with skills disabled, which has not been done.
+
+That last point is the one to fix before claiming the skills are what made the difference.
 
 ## What this plan refuses to claim
 

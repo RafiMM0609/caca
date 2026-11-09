@@ -21,7 +21,7 @@
         "release/server/index.mjs"
       ],
       "readiness_path": "/api/health",
-      "timeout": 900,
+      "timeout": 1800,
       "qa_timeout": 120,
       "checks_dir": "checks",
       "checks_argv": [
