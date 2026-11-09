@@ -273,3 +273,36 @@ def test_approval_after_a_rejection_is_recorded_as_a_disagreement(env):
     record = store.workers_for("job-1")[0]
     assert record["state"] == "merged", "the verdict stands; this is a warning, not a block"
     assert "flaky_approval" in (record["detail"] or "")
+
+
+def test_a_merged_worktree_is_removed_from_disk(settings, store, project, plan):
+    """A merged branch leaves a dead worktree holding a full `node_modules`.
+
+    Removal only happened when a retry reused the branch, so a successful build leaked every
+    worktree it created: two builds left 2.4GB behind before anyone looked.
+    """
+    from pathlib import Path
+
+    class Worker:
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                     skills=()):
+            (Path(worktree) / "index.html").write_text("<title>x</title>")
+            return "ok"
+
+    builder = ParallelBuilder(settings, store, worker=Worker())
+    job = {"id": "cleanup-job", "payload": "{}"}
+    builder.build_tasks(store.project(project["id"]), job, plan,
+                        lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+
+    root = products.product_root(settings.data, project["id"])
+    # `list_worktrees` includes the primary checkout; only worker branches must be gone.
+    leftover = [w for w in products.list_worktrees(root) if w.get("branch") != "main"]
+    assert leftover == [], f"merged worktrees must not survive: {leftover}"
+
+    workers_dir = settings.data / "workers" / "cleanup-job"
+    assert not workers_dir.exists() or not any(workers_dir.iterdir()), \
+        f"worktree directories left behind: {list(workers_dir.iterdir()) if workers_dir.exists() else []}"
+
+    rows = store.workers_for("cleanup-job")
+    assert rows and all(r["state"] == "merged" for r in rows), \
+        "the merge must still be recorded even though the directory is gone"

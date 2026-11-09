@@ -284,6 +284,16 @@ class ParallelBuilder:
                                  finished=__import__("time").time(), commit_sha=head)
             store.event(project["id"], job["id"], "worker.merged", {"task": outcome.task_id})
             accepted.add(outcome.task_id)
+            # The branch is merged, so the worktree is dead weight: it holds a full
+            # `node_modules` and nothing reads it again. Leaving it behind leaked 2.4GB across
+            # two builds before anyone noticed, because removal only happened on a retry.
+            # Failure to clean is logged rather than raised: the merge already succeeded, and
+            # a leftover directory must not fail a build.
+            try:
+                products.worktree_remove(root, outcome.worktree)
+            except (products.GitError, OSError) as exc:
+                store.event(project["id"], job["id"], "worktree.cleanup_failed",
+                            {"task": outcome.task_id, "detail": str(exc)[:500]})
         return accepted
 
     def _spawn_fixer(self, project, job, root, outcome, cancelled):
