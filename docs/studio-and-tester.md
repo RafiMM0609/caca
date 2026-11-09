@@ -84,7 +84,15 @@ API cases: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` with a JSON body, exp
 
 A browser case may begin with **optional `request` actions as setup**, then must navigate with `goto`, and after `goto` may use browser actions only. Setup requests exist because a UI case often needs a record to exist before the page is opened — otherwise a case could only ever test an empty page. A `request` after `goto` is rejected, so a UI assertion can never be satisfied by an API response.
 
-Browser actions are `reload`, `fill`, `select`, `press`, `click`, `expect_text`, `expect_value`, `expect_visible`, `expect_hidden`, `expect_count` and `expect_url`. At least one assertion must appear after `goto`. Expected URLs must be app-relative. Browser HTTP requests are restricted to the app origin; service workers and WebSockets are blocked during testing. Arbitrary generated test JavaScript is not executed by this runner.
+Browser actions are `reload`, `fill`, `select`, `press`, `click`, `expect_text`, `expect_value`, `expect_visible`, `expect_hidden`, `expect_count` and `expect_url`.
+
+**Authentication.** A `request` action takes a `headers` map, and a whole case takes one too:
+`request` headers cover that HTTP call, case-level headers are applied to every browser request
+in the case (via Playwright's `extra_http_headers`). Without them any application behind a token
+was untestable — cookies persisted within a case, which covered a flow that starts by logging in,
+but not a bearer token or API key the caller must supply. Header names must match
+`[A-Za-z0-9][A-Za-z0-9!#$%&'*+.^_`|~-]*` and values may not contain control characters or
+newlines, because these reach an outbound request and a newline would permit header injection. At least one assertion must appear after `goto`. Expected URLs must be app-relative. Browser HTTP requests are restricted to the app origin; service workers and WebSockets are blocked during testing. Arbitrary generated test JavaScript is not executed by this runner.
 
 Assertion semantics, which are deliberate and were each fixed against a real failing suite:
 
@@ -126,7 +134,7 @@ Primary capability references: [Nuxt Studio module](https://nuxt.com/modules/stu
 
 ## Executed validation result
 
-**2026-11-09 (current).** 209 Python tests passed, 3 skipped (164 collected); 15 JavaScript worker-state tests passed; ruff and `node --check` clean.
+**2026-11-09 (current).** 230 Python tests passed, 3 skipped (164 collected); 15 JavaScript worker-state tests passed; ruff and `node --check` clean.
 
 **2026-11-07 (before workers became parallel).** 58 Python tests passed, 2 Docker tests skipped; 8 JavaScript worker-state tests passed. The real dashboard journey passed: create project, initialize Nuxt starter, clean npm installation, build, 3 API/browser cases, embedded Studio field editing, review diff, apply revision 2, rebuild, and all 3 API/browser cases again, with the original artifact retained. Tester model responses were scripted test doubles.
 

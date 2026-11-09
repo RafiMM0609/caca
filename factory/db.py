@@ -26,7 +26,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS projects(
                   id TEXT PRIMARY KEY, name TEXT NOT NULL, brief TEXT NOT NULL, profile TEXT NOT NULL,
                   state TEXT NOT NULL DEFAULT 'draft', revision INTEGER NOT NULL DEFAULT 0,
-                  plan TEXT, artifact TEXT, created REAL NOT NULL);
+                  plan TEXT, artifact TEXT, created REAL NOT NULL,
+                  client_id TEXT NOT NULL DEFAULT '');
                 CREATE TABLE IF NOT EXISTS jobs(
                   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), kind TEXT NOT NULL,
                   state TEXT NOT NULL DEFAULT 'queued', payload TEXT NOT NULL DEFAULT '{}',
@@ -59,6 +60,8 @@ class Store:
                 columns = {row[1] for row in db.execute("PRAGMA table_info(projects)")}
                 if "pending_edit" not in columns:
                     db.execute("ALTER TABLE projects ADD COLUMN pending_edit TEXT")
+                if "client_id" not in columns:
+                    db.execute("ALTER TABLE projects ADD COLUMN client_id TEXT NOT NULL DEFAULT ''")
                 # Resume is only valid within the plan revision that produced the work: after
                 # an edit the same task id means different code, so a merged row from an older
                 # revision must not be treated as done.
@@ -113,9 +116,12 @@ class Store:
     def create_project(self, payload):
         project = uid()
         with self.tx() as db:
-            db.execute("INSERT INTO projects(id,name,brief,profile,created) VALUES(?,?,?,?,?)",
-                       (project, payload.name, payload.brief, payload.profile, time.time()))
-            self.event_tx(db, project, None, "project.created", {"name": payload.name})
+            db.execute("INSERT INTO projects(id,name,brief,profile,created,client_id) "
+                       "VALUES(?,?,?,?,?,?)",
+                       (project, payload.name, payload.brief, payload.profile, time.time(),
+                        payload.client_id))
+            self.event_tx(db, project, None, "project.created",
+                          {"name": payload.name, "client_id": payload.client_id})
         return self.project(project)
 
     def project(self, project):

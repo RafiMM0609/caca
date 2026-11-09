@@ -183,13 +183,23 @@ kept because tests use them to inspect outcomes, not because they are the resume
     not time out. **Done:** the live plan above; `tests/test_contract.py` also asserts that
     forbidding a verification *task* did not remove the `test_flows` contract.
 
-### Phase 4 — Capability (P4, only when the owner prioritises it)
+### Phase 4 — Capability (P4) — **2 of 3 DONE 2026-11-09, typecheck still deferred**
 
-14. `headers` support in the tester, so an app with authentication is testable.
-15. Lint and TypeScript typecheck in the validation profile. This needs the lockfile
-    regenerated and re-validated, which is why it was deferred.
-16. `client_id`, per-client archiving and a product export path, so a finished product can
-    actually be handed to a client.
+14. `headers` support in the tester, so an app with authentication is testable. **Done:** a
+    `request` action takes `headers`, and a case takes case-level `headers` applied to every
+    browser request. Names and values are validated, because a newline would permit header
+    injection into an outbound request. Proven live against a server that gates a page and an
+    endpoint on a bearer token: the case passes with the header and fails without it.
+15. Lint and TypeScript typecheck in the validation profile. **Still deferred.** The starter
+    ships neither `typescript` nor `vue-tsc`, so adding typecheck means regenerating a lockfile
+    that was validated end-to-end; the risk is not worth it without a reason to own it. Lint is
+    available through `checks_argv` and is not wired into a shipped profile.
+16. `client_id`, per-client archiving and a product export path. **Partly done:** `client_id`
+    is recorded on the project and in the audit trail, and `GET /api/projects/<id>/export`
+    returns a git bundle that clones with full history, recorded as `project.exported`.
+    **Per-client archiving is still not implemented** — deleting everything belonging to one
+    client still needs manual work — and there is still no authorization boundary between
+    clients, because there is one operator and clients do not log in.
 
 ### Phase 5 — Deferred
 

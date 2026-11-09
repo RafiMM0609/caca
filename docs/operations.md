@@ -173,6 +173,30 @@ Monitor worker heartbeat age, failed/unknown jobs, memory failures, disk use and
 
 Live Pi generation/review with the selected provider across all stages; a **single `build` job that runs a plan through workers, verification and publication in one attempt** (none has ever completed — every published artifact came from a separately enqueued `verify` job); live Memorix roundtrip; HTTPS and token rotation; actual staging/production SSH deployment; service restart, health failure and rollback; server reboot/interrupted-release recovery; full backup restoration; and application-specific browser/security/business tests. No remote production deployment was performed during implementation.
 
+## Client attribution and hand-off
+
+A project may carry an optional `client_id` (lowercase `[a-z0-9][a-z0-9_-]*`, max 80 chars),
+recorded on the project row and in the `project.created` event. It is **attribution, not
+isolation**: there is still one operator, clients do not log in, and no authorization is
+derived from it. What it buys is the ability to tell deliberately which product belongs to
+which client, which the eventual hand-off needs.
+
+`GET /api/projects/<id>/export` (operator token) returns a **git bundle** of the whole product
+repository — every branch, every commit — rather than a tarball of the working tree. A bundle
+clones directly:
+
+```sh
+git clone product.bundle my-product
+```
+
+The export is recorded as a `project.exported` event with the bundle digest, the branch list
+and the `client_id`, so a hand-off is auditable. It contains no remote configuration and no
+credential: the product repository has none, and the factory blanks the operator's git
+environment when it runs git.
+
+**Still not implemented:** per-client archiving (deleting everything belonging to one client
+still needs manual work), and any authorization boundary between clients.
+
 ## Client separation (not implemented)
 
 Products are separated by git repository and directory, not by authentication. There is one operator; clients do not log in. There is no `client_id`, no per-client archiving, and no export or hand-off path for a product repository. Do not describe the current release as multi-tenant, and do not assume you can cleanly delete "everything belonging to client X" without manual work.

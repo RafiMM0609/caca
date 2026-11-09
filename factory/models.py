@@ -177,6 +177,12 @@ class ProjectInput(StrictModel):
     name: str = Field(min_length=3, max_length=100)
     brief: str = Field(min_length=20, max_length=20000)
     profile: str = Field(default="static", pattern=r"^[a-z][a-z0-9_-]{0,40}$")
+    # Who the product is for. Optional, because a single-operator setup may not care, but
+    # recorded when supplied: products are separate git repositories and the eventual goal is
+    # to hand each one to a different client, which is impossible to do deliberately without
+    # attributing it. This is an attribution label, NOT an isolation boundary -- there is one
+    # operator and clients do not log in.
+    client_id: str = Field(default="", max_length=80, pattern=r"^[a-z0-9][a-z0-9_-]*$|^$")
 
 
 # A profile's env is operator-authored configuration, not a place for secrets. It reaches a

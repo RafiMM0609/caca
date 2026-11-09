@@ -40,7 +40,7 @@ Note that the `node` example does not configure operator checks. The Studio prof
 
 **2026-11-09 (current, re-measured at `3e49524`).**
 
-- `pytest -q`: **209 passed, 3 skipped** (212 collected), 1 upstream Starlette/httpx deprecation warning. Two skips are Docker integration tests; the third is the opt-in live worker test, which passed when run separately with `FACTORY_LIVE_WORKER=1`.
+- `pytest -q`: **230 passed, 3 skipped** (233 collected), 1 upstream Starlette/httpx deprecation warning. Two skips are Docker integration tests; the third is the opt-in live worker test, which passed when run separately with `FACTORY_LIVE_WORKER=1`.
 - `node --test tests/workers.test.cjs`: **15 passed**.
 - `ruff check factory tests scripts/validate_studio_journey.py`: passed.
 - `node --check` on both dashboard scripts: passed.

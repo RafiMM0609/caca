@@ -250,6 +250,36 @@ def create_app(settings=None):
         return FileResponse(settings.data / "jobs" / artifact["job_id"] / "artifact.tar.gz",
                             filename=f"{project}-{artifact['digest'][:12]}.tar.gz", media_type="application/gzip")
 
+    @app.get("/api/projects/{project}/export")
+    def project_export(project: str, _=Depends(operator)):
+        """Download the product's whole repository, for handing to a client.
+
+        The artifact endpoint ships the current source; this ships the history as a git
+        bundle, which a client can `git clone` directly. Operator only: it exposes every
+        branch, including abandoned work.
+        """
+        from . import products as product_repo
+
+        record = store.project(project)
+        root = product_repo.product_root(settings.data, record["id"])
+        if not root.is_dir():
+            raise HTTPException(404, "This product has no repository yet")
+        bundles = settings.data / "exports"
+        bundles.mkdir(parents=True, exist_ok=True, mode=0o700)
+        destination = bundles / f"{record['id']}.bundle"
+        try:
+            receipt = product_repo.bundle_repository(root, destination)
+        except product_repo.GitError as exc:
+            raise HTTPException(500, f"Could not bundle the repository: {str(exc)[:200]}") from exc
+        branches = product_repo.bundle_heads(root)
+        store.event(record["id"], None, "project.exported",
+                    {"bytes": receipt["bytes"], "digest": receipt["digest"],
+                     "branches": branches, "client_id": record.get("client_id", "")})
+        label = record.get("client_id") or record["id"][:12]
+        return FileResponse(destination,
+                            filename=f"{label}-{record['name'][:40].replace(' ', '-')}.bundle",
+                            media_type="application/octet-stream")
+
     static = Path(__file__).parent / "static"
     app.mount("/assets", StaticFiles(directory=static), name="assets")
 

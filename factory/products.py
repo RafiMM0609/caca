@@ -8,6 +8,7 @@ into the product's target branch one at a time.
 This module is deliberately the only place that shells out to git. All commands are
 argv arrays with no shell interpolation, matching the rest of the factory.
 """
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -310,3 +311,44 @@ def ancestors(root: Path, limit=500) -> set[str]:
     """
     out = _run(["rev-list", f"--max-count={limit}", "HEAD"], cwd=root, timeout=60)
     return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+MAX_BUNDLE = 1_500_000_000
+
+
+def _digest(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def bundle_repository(root: Path, destination: Path, limit=MAX_BUNDLE) -> dict:
+    """Package a product repository, history included, for hand-off to a client.
+
+    The artifact endpoint already ships the *current source*. This ships the repository: every
+    branch, every commit, so a client can see how the product got here and can continue from
+    it. `git bundle` is used rather than a tarball of `.git`, because a bundle is a single
+    file a client can `git clone` directly and it verifies its own integrity on clone.
+
+    No credential can leak: `_run` blanks the operator's git environment, and a bundle
+    contains no remote configuration from the factory (the product repository has no remote).
+    """
+    import os
+    if not root.is_dir():
+        raise GitError("Product repository does not exist")
+    if destination.exists():
+        destination.unlink()
+    _run(["bundle", "create", str(destination), "--all"], cwd=root, timeout=300)
+    size = destination.stat().st_size
+    if size > limit:
+        os.replace(destination, destination.with_suffix(".oversize"))
+        raise GitError(f"Repository bundle exceeds {limit} bytes")
+    return {"bytes": size, "digest": _digest(destination)}
+
+
+def bundle_heads(root: Path) -> list[str]:
+    """Branch names included in a bundle, for the receipt."""
+    out = _run(["branch", "--format=%(refname:short)"], cwd=root, timeout=60)
+    return [line.strip() for line in out.splitlines() if line.strip()]

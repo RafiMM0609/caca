@@ -36,6 +36,24 @@ class TestAction(StrictModel):
     status: int = Field(default=200, ge=100, le=599)
     json_equals: dict | None = None
     count: int = Field(default=-1, ge=-1, le=100_000)
+    # Request headers. Without these, any application with a login is untestable: an API case
+    # cannot present a bearer token or an API key, and a browser case cannot seed state through
+    # an authenticated endpoint. Cookies already persist within a case, which covers a session
+    # that starts from a login request but not a token the caller has to supply.
+    #
+    # Bounded and validated rather than free-form: this reaches an outbound request, so a
+    # header name must look like a header name and nothing may contain a newline, which would
+    # otherwise permit header injection.
+    headers: dict[str, str] = Field(default_factory=dict, max_length=20)
+
+    @model_validator(mode="after")
+    def valid_headers(self):
+        for name, value in self.headers.items():
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9!#$%&'*+.^_`|~-]{0,63}", name):
+                raise ValueError(f"Invalid header name: {name!r}")
+            if any(ord(c) < 32 or ord(c) == 127 for c in value) or len(value) > 2000:
+                raise ValueError(f"Invalid header value for {name}")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -88,6 +106,19 @@ class TestCase(StrictModel):
     actions: list[TestAction] = Field(min_length=1, max_length=30)
     # Escape hatch for a page with a known, reviewed console error. Default is strict.
     allow_console_errors: bool = False
+    # Headers applied to every browser request in this case. A page behind a token or a
+    # reverse-proxy auth header cannot be navigated without them, and a `request` action's
+    # headers only cover that one HTTP call.
+    headers: dict[str, str] = Field(default_factory=dict, max_length=20)
+
+    @model_validator(mode="after")
+    def valid_case_headers(self):
+        for name, value in self.headers.items():
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9!#$%&'*+.^_`|~-]{0,63}", name):
+                raise ValueError(f"Invalid header name: {name!r}")
+            if any(ord(c) < 32 or ord(c) == 127 for c in value) or len(value) > 2000:
+                raise ValueError(f"Invalid header value for {name}")
+        return self
 
     @model_validator(mode="after")
     def meaningful(self):
@@ -170,7 +201,9 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                                                      "index": index, "case": case})
                         result["isolated"] = True
                     if browser:
-                        context = browser.new_context(service_workers="block", accept_downloads=False)
+                        context = browser.new_context(
+                            service_workers="block", accept_downloads=False,
+                            extra_http_headers=case.headers or None)
                         context.route("**/*", lambda route: route.continue_() if
                                       urlsplit(route.request.url)[:2] == urlsplit(case_url)[:2] else route.abort())
                         context.route_web_socket("**/*", lambda ws: ws.close())
@@ -186,7 +219,9 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                             raise TimeoutError("Tester case deadline exceeded")
                         duration = min(5, remaining)
                         if action.action == "request":
-                            with client.stream(action.method, case_url + action.path, json=action.body, timeout=duration) as response:
+                            with client.stream(action.method, case_url + action.path, json=action.body,
+                                               headers=action.headers or None,
+                                               timeout=duration) as response:
                                 assert response.status_code == action.status, "API status assertion failed"
                                 if action.json_equals is not None:
                                     data = bytearray()
