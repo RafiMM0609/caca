@@ -126,7 +126,7 @@ Primary capability references: [Nuxt Studio module](https://nuxt.com/modules/stu
 
 ## Executed validation result
 
-**2026-11-09 (current).** 174 Python tests passed, 3 skipped (164 collected); 15 JavaScript worker-state tests passed; ruff and `node --check` clean.
+**2026-11-09 (current).** 180 Python tests passed, 3 skipped (164 collected); 15 JavaScript worker-state tests passed; ruff and `node --check` clean.
 
 **2026-11-07 (before workers became parallel).** 58 Python tests passed, 2 Docker tests skipped; 8 JavaScript worker-state tests passed. The real dashboard journey passed: create project, initialize Nuxt starter, clean npm installation, build, 3 API/browser cases, embedded Studio field editing, review diff, apply revision 2, rebuild, and all 3 API/browser cases again, with the original artifact retained. Tester model responses were scripted test doubles.
 

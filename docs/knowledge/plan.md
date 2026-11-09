@@ -23,24 +23,34 @@ The components are individually proven with live model calls and real builds:
 | Persistence across a restart | works | A record was read back after a full process restart |
 | Dashboard shows waves and workers | works | 6 waves, 5 workers, 1 repair, tester and verifier passed |
 
-**The one finding that dominates everything else.** Across every recorded run:
+**The finding that dominated everything, now closed.** Across every run before 2026-11-09:
 
 ```
 build jobs : failed, failed, failed, interrupted, interrupted, interrupted
 verify jobs: succeeded   ← every published artifact came from a separately enqueued verify
 ```
 
-A `build` job is the one that runs the workers *and* publishes. It has **never once succeeded
-end-to-end**. Every green result was produced by enqueueing a `verify` job afterwards, from a
-driver script. So the parts work; the factory does not yet work as one operation.
+A `build` job is the one that runs the workers *and* publishes. It had never once succeeded
+end-to-end. **Phase 0 closed on 2026-11-09** — see below. The parts work, and now the factory
+works as one operation.
 
 ## Gap analysis
 
 Ordered by what blocks the stated goal, not by how interesting it is.
 
-1. **One job has never closed the loop.** `POST /approve` does enqueue a single `build` job that
-   plans, runs workers, verifies and publishes, so the wiring exists — it has simply never
-   completed. This is the milestone.
+1. ~~**One job has never closed the loop.**~~ **Closed 2026-11-09.** A single `build` job ran a
+   complete brief to a published artifact in 15.3 minutes: planner (no questions asked, because
+   the brief was complete), a four-task DAG, four Pi workers (two of them concurrent in wave 2),
+   merge barrier, `npm ci` + `npm run build`, and three acceptance cases — two real browser
+   cases with `console_errors: []` — all passed. `build` row `succeeded`, project `ready`,
+   artifact `kind: source`, 12 files, 262 KB. The artifact was then extracted and built
+   independently of the factory: `npm ci` and `npm run build` both exited 0, `/api/health`
+   returned `{"status":"ok"}`, and the home page served the shop name and both menu items.
+   **What made the difference** was not the retry wiring: every earlier attempt died at the
+   tester gate because the approved plan contradicted itself — the operator's answers to the
+   planner's questions were appended to the task instructions but never to `test_flows[].steps`,
+   so the worker built the corrected copy and the tester asserted the planner's original
+   placeholder. A complete brief avoids that path.
 2. **No repair loop for failing gates.** `max_repairs` applies only to a worker *review*
    rejection. When verification or the tester fails, `verify()` raises and the job dies. The
    historical build failures were tester-side defects since fixed, but the architecture still
@@ -78,33 +88,41 @@ Ordered by what blocks the stated goal, not by how interesting it is.
     a tautology (it asserted `".git"` was absent from the path parts, not that the path was
     outside the tree); it now asserts `not path.is_relative_to(repo)` and that writing the
     database leaves the repository clean. Confirmed to fail when the fix is reverted.
-12. **Acceptance cases are only isolated when the profile declares `{data}`.** `verifier.py`
-    enables per-case isolation through `if any("{data}" in value for value in profile.env.values())`.
-    A tester-enabled profile without `env` shares one process and one database across every
-    case, which is the contamination the isolation work was meant to remove. Unproven for
-    profiles that keep state anywhere other than the data directory.
+12. ~~**Acceptance cases are only isolated when the profile declares `{data}`.**~~ **Fixed
+    2026-11-09.** Isolation is now unconditional, and each case also gets its own copy of the
+    build tree, because a fresh process alone still let an application that persists beside
+    itself leak state into the next case. The copy uses `clone_build_tree()`, which preserves
+    symlinks: `node_modules/.bin` is entirely symlinks, and the strict source walk would have
+    failed every real Node verification at that step.
 
 ## Phases
 
-### Phase 0 — Close the loop (P0, the milestone)
+### Phase 0 — Close the loop (P0, the milestone) — **DONE 2026-11-09**
 
 One `build` job from approval to published artifact, with no manual step.
 
-1. Run the same CRUD brief as a `build` job, not a `verify`, on current code.
-2. Capture the exact failing stage with evidence; classify it as planner, worker, review,
-   verifier or tester.
-3. Fix only real defects. Do not substitute retries for a fix.
-4. **Done when:** the `build` row is `succeeded`, the project is `ready`, an artifact digest
-   exists, every `workers` row is terminal, and the run is reproducible from a clean data dir.
+All four exit criteria were met on a live run: `build` `succeeded`, project `ready`, artifact
+digest `f4681a3a…`, all four `workers` rows `merged`, 15.3 minutes, and the extracted artifact
+built and served correctly outside the factory.
 
-### Phase 0 findings (recorded as they are found)
+### Phase 0 findings (recorded as they were found)
 
-- **F1 — the planner has no retry, the tester has three.** `Engine.prepare_tests()` retries
-  `max_repairs + 1` times on a structurally invalid response; the planner calls
-  `generate(...)` once and a single malformed generation fails the whole job. Observed live: a
-  planner job died with `ValueError` on its first attempt, and an identical standalone call with
-  a slightly shorter prompt succeeded immediately. One model hiccup should not kill a run, so
-  the planner needs the same bounded retry the tester already has.
+- **F1 — the planner has no retry, the tester has three.** *(Fixed.)* `Engine.prepare_tests()`
+  retried `max_repairs + 1` times on a structurally invalid response; the planner called
+  `generate(...)` once and a single malformed generation failed the whole job. The planner now
+  has the same bounded retry and writes each failed attempt to `plan-attempt-<n>.txt`.
+- **F2 — selector labels were rejected without ever being specified.** *(Fixed.)* The planner
+  was told to fill a `selectors` map but never told the naming rule, and the validator required
+  lowercase `[a-z][a-z0-9_-]*`. Two live planner jobs died on `shopName` / `heroName`.
+  `camelCase` is now normalised to `snake_case`, and the prompt states the rule.
+- **F3 — the gate was right and the plan was self-contradictory.** The last failing run before
+  Phase 0 closed died with two browser cases passing except for one hero paragraph. The
+  application was correct: the worker had implemented the operator's answer. The tester
+  asserted the planner's original placeholder because `test_flows[].steps` still held it. The
+  operator's answers were appended to `task.instructions` and to `assumptions`, but nothing
+  rewrote the test contract. **Nothing in the code prevents this**, and it is the most likely
+  way a real run dies: answering a planner question by editing one field and not the others.
+  A complete brief avoids it, which is how Phase 0 was closed.
 
 ### Phase 1 — Repair loop (P1)
 
@@ -153,9 +171,15 @@ One `build` job from approval to published artifact, with no manual step.
 
 ## Sequencing rule
 
-**Phase 0 first.** It is the only item that converts "the components work" into "the product
-works", it is cheap, and its result decides whether Phase 1 is even the right next move.
-Everything later is speculative until a single build job goes green end to end.
+**Phase 0 is closed, so Phase 1 is now the next move.** The loop closes, which means the
+remaining work is about making a run survive contact with reality rather than about wiring.
+
+Phase 1 first, and specifically for F3: the most likely way a live run dies is not a broken
+component but a plan that contradicts itself after an operator answers a planner question.
+A repair loop that feeds the failing case, expected versus actual, and the screenshot back to
+a worker is what turns that from a dead job into a corrected one. Phase 2 (resume) matters as
+soon as runs are long — the Phase 0 run took 15 minutes, so a scheduler restart in the middle
+still discards all of it. Phase 3 is cheap and saves a worker per build.
 
 ## Honesty rules for this plan
 

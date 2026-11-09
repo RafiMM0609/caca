@@ -6,7 +6,7 @@ Continuing agents: start with [AGENTS.md](AGENTS.md), then the [knowledge and pr
 
 **Release status: pre-production 0.1.0.** The workflow, parallel worker lane and container isolation have automated tests. Live end-to-end runs were performed with `opencode-go/deepseek-v4.1-flash`, including a full Nuxt Studio journey re-run under the parallel worker lane and a SQLite CRUD application that passed 11 of 11 acceptance cases. See [handoff](docs/knowledge/handoff.md) for the dated evidence and its caveats; the run logs live in ignored local directories and are not in this repository.
 
-**The parts are proven; the whole is not.** No single `build` job has ever completed end to end — every published artifact came from a separately enqueued `verify` job driven by a script. Closing that loop is Phase 0 of the [delivery plan](docs/knowledge/plan.md). This is not a certified production system for POS, financial transactions, ERP, or mutually untrusted tenants.
+**The loop now closes.** On 2026-11-09 a single `build` job ran a complete brief to a published artifact in 15.3 minutes: planner, a four-task DAG, four Pi workers (two concurrent), merge barrier, build, and three acceptance cases — two of them real browser cases — all passed. The artifact was then extracted and built outside the factory, and served correctly. Phase 0 of the [delivery plan](docs/knowledge/plan.md) is closed; Phase 1 (a repair loop for failing gates) is next. This is still not a certified production system for POS, financial transactions, ERP, or mutually untrusted tenants.
 
 ## How work runs
 
