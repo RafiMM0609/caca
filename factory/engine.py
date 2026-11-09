@@ -91,7 +91,14 @@ class Engine:
         project = store.project(project_id)
         done = threading.Event()
 
-        deadline = time.monotonic() + settings.job_timeout
+        # Scale the ceiling with the plan rather than using a flat number: a flat ceiling
+        # either kills a legitimate larger plan or lets a wedged one run for hours. Waves,
+        # not tasks, drive the cost because a wave runs concurrently.
+        budget = self._job_budget(project, job_id, store)
+        started = time.monotonic()
+        deadline = started + budget
+        store.event(project_id, job_id, "job.budget", {"seconds": budget,
+                                                       "job_timeout": settings.job_timeout})
 
         def expired():
             return time.monotonic() > deadline
@@ -157,6 +164,7 @@ class Engine:
                 result = self.deploy(project, job, cancelled)
             else:
                 raise ValueError("Unknown job kind")
+            self._record_timing(store, project_id, job_id, started, budget)
             store.finish(job_id, "succeeded", result)
         except Cancelled:
             store.finish(job_id, "cancelled", error="Cancelled; inspect deployment status if applicable")
@@ -167,6 +175,60 @@ class Engine:
         finally:
             done.set()
             pulse.join(timeout=5)
+
+    def _record_timing(self, store, project, job, started, budget):
+        """Summarise where this job's wall time went.
+
+        A single total is not actionable: 15 minutes of workers needs a different response
+        from 15 minutes of acceptance tests. The breakdown is read back from the events this
+        job already emitted, so it cannot disagree with them.
+        """
+        events = store.all("SELECT kind, detail FROM events WHERE job_id=? ORDER BY seq",
+                           (job,))
+        waves = []
+        workers = {}
+        verification = 0.0
+        for event in events:
+            try:
+                detail = json.loads(event["detail"])
+            except (ValueError, TypeError):
+                continue
+            if event["kind"] == "wave.done" and "seconds" in detail:
+                waves.append({"tasks": detail.get("tasks", []),
+                              "seconds": detail.get("seconds")})
+            elif event["kind"] in ("worker.merged", "worker.rejected"):
+                task = detail.get("task")
+                if task:
+                    workers.setdefault(task, 0.0)
+            elif event["kind"] == "verification.timed":
+                verification += float(detail.get("seconds") or 0)
+        for row in store.workers_for(job):
+            try:
+                seconds = json.loads(row["detail"] or "{}").get("seconds")
+            except (ValueError, TypeError):
+                seconds = None
+            if seconds is not None:
+                workers[row["task_id"]] = seconds
+        total = round(time.monotonic() - started, 1)
+        store.event(project, job, "job.timing", {
+            "total_seconds": total,
+            "budget_seconds": budget,
+            "used_fraction": round(total / budget, 3) if budget else None,
+            "waves": waves,
+            "worker_seconds": workers,
+            "verification_seconds": round(verification, 1),
+        })
+
+    def _job_budget(self, project, job_id, store) -> int:
+        """Wall-clock budget for this job, scaled by the plan when one exists."""
+        plan = None
+        if project.get("plan"):
+            try:
+                plan = Plan.model_validate_json(project["plan"])
+            except ValueError:
+                plan = None
+        profile = self.settings.profiles.get(project["profile"])
+        return self.settings.job_deadline_seconds(plan, profile)
 
     def _spacing(self, cancelled, seconds=30):
         for _ in range(max(1, seconds // 3)):
@@ -272,6 +334,7 @@ class Engine:
         for attempt in range(self.settings.max_repairs + 1):
             if cancelled():
                 raise Cancelled("Cancelled before verification")
+            verify_started = time.monotonic()
             store.event(project["id"], job["id"], "verification.running", {"attempt": attempt + 1})
             if evidence_dir.exists():
                 # Stale evidence from the previous attempt would be read as the current
@@ -312,6 +375,9 @@ class Engine:
                 continue
 
             (work / "verification.txt").write_text(log)
+            store.event(project["id"], job["id"], "verification.timed",
+                        {"attempt": attempt + 1,
+                         "seconds": round(time.monotonic() - verify_started, 1)})
             return log
         raise ValueError("Verification loop ended without a result")
 

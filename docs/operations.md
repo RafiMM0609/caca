@@ -92,6 +92,44 @@ evidence afterwards.
 
 `npm ci` requires network access, which is why the Nuxt Studio profile is native rather than Docker. Add application-specific acceptance tests, not just build checks. The included static check is structural; it is not browser, accessibility, security or business acceptance certification.
 
+## Timeouts and run budgets
+
+Three bounds, each for a different unit of work, because one number cannot serve them:
+
+| Variable | Default | Bounds |
+| --- | --- | --- |
+| `FACTORY_AGENT_TIMEOUT` | 600s | one tool-free structured call (planner, tester preparation, review) |
+| `FACTORY_WORKER_TIMEOUT` | 1800s | one Pi harness worker, which may edit a tree and build it |
+| `FACTORY_JOB_TIMEOUT` | 7200s | **floor** for a whole job |
+| `FACTORY_MAX_JOB_TIMEOUT` | 21600s | hard cap for the scaled estimate |
+
+`profile.timeout` (default 900s) bounds one verification pass: the build, the operator checks
+and every acceptance case. `profile.qa_timeout` (default 120s) is **per acceptance case**, not
+for the suite.
+
+`FACTORY_JOB_TIMEOUT` is a floor, not the real ceiling. The engine scales the budget with the
+plan: waves, not tasks, drive wall time because a wave runs concurrently, so the estimate is
+`batches x worker_timeout + verification + repair allowance`, where a wave wider than
+`FACTORY_WORKER_CONCURRENCY` counts as several batches. The configured floor wins when it is
+larger, and `FACTORY_MAX_JOB_TIMEOUT` caps the result so a pathological plan cannot claim an
+unbounded run. A flat ceiling was wrong in both directions: it killed a legitimate larger plan
+with no defect to find, and it let a wedged job run for hours.
+
+Every job records `job.budget` when it starts and `job.timing` when it succeeds:
+
+```json
+{"total_seconds": 542.7, "budget_seconds": 7200, "used_fraction": 0.075,
+ "waves": [{"tasks": ["project-scaffold"], "seconds": 300.8},
+           {"tasks": ["content-and-page"], "seconds": 122.2}],
+ "worker_seconds": {"project-scaffold": 253.4, "content-and-page": 105.4},
+ "verification_seconds": 118.9}
+```
+
+That breakdown is the point: a total alone is not actionable, because 15 minutes of workers
+needs a different response from 15 minutes of acceptance tests. Each `wave.done` also carries
+its own duration, and each worker's `detail.seconds` carries its harness run time, so a slow
+stage is visible without reconstructing it from timestamps.
+
 ## Concurrency and resource bounds
 
 - `FACTORY_WORKER_CONCURRENCY` (default 3, max 16) bounds how many Pi harness workers run at once. Each is its own process tree with its own worktree and temporary `HOME`.

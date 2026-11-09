@@ -66,25 +66,20 @@ A reviewer's `findings` are carried into the next attempt's prompt as `PREVIOUS 
 
 If a task is approved on a later attempt after an earlier rejection, the verdict stands but a `review.flaky_approval` event records the disagreement together with the earlier findings, and `worker.detail.flaky_approval` is set. That is a warning rather than a block because the worker may genuinely have fixed the issue; the operator should confirm rather than discover it in two review files.
 
-## Timeouts
-
-Three bounds, each for a different unit of work, because a single number cannot serve them:
+## Timeouts and run budgets
 
 | Setting | Default | Bounds |
 | --- | --- | --- |
-| `FACTORY_AGENT_TIMEOUT` | 600s | one tool-free structured call (planner, tester, review) |
-| `FACTORY_WORKER_TIMEOUT` | 1800s | one Pi harness worker, which may edit a tree and build it |
-| `FACTORY_JOB_TIMEOUT` | 7200s | the whole job: waves, build, acceptance tests, repairs |
+| `FACTORY_AGENT_TIMEOUT` | 600s | one tool-free structured call |
+| `FACTORY_WORKER_TIMEOUT` | 1800s | one Pi harness worker, which may build its own work |
+| `FACTORY_JOB_TIMEOUT` | 7200s | floor for a whole job |
+| `FACTORY_MAX_JOB_TIMEOUT` | 21600s | hard cap for the scaled estimate |
+| `profile.timeout` | 900s | one verification pass (build, checks, every case) |
+| `profile.qa_timeout` | 120s | **per** acceptance case |
 
-Validation refuses a worker timeout larger than the job timeout, so one worker cannot outlive the run it belongs to.
+The job ceiling scales with the plan rather than being flat. Waves drive wall time, because a wave runs concurrently, so `Config.job_deadline_seconds` computes `batches x worker_timeout + verification + repair allowance`, where a wave wider than the worker concurrency counts as several batches. The configured floor wins when larger and `MAX_JOB_TIMEOUT` caps the result. A flat ceiling was wrong both ways: too small killed a legitimate larger plan with no defect to find, too large let a wedged job run for hours.
 
-The planner is also told that verification belongs to the factory: the verifier runs the profile's install and build commands, the operator checks and every declared test flow after the merge barrier. A task whose only job is to repeat that costs a worker and a full model call, and its result is discarded.
-
-## Restart and resume
-
-A retry after a scheduler restart creates a **new job id**, so a job cannot answer "which tasks are already done" by looking at itself. `Store.tasks_merged_for_project` requires two independent facts: a worker row recorded as merged **for this plan revision**, and that commit **still reachable from the product branch** (`products.ancestors`). A row alone is unsafe — a `git reset` or a failed conflict resolution leaves it behind — and a commit alone cannot say which task produced it. A `build.resumed` event records what was skipped.
-
-`FACTORY_JOB_TIMEOUT` bounds the whole job (default two hours), separate from `FACTORY_AGENT_TIMEOUT` which bounds one model invocation. A build is several worker waves plus a build, acceptance tests and a possible repair loop, so a single number cannot serve both; the deadline travels through the same cancellation path as an operator cancel.
+Each job emits `job.budget` at start and `job.timing` on success, the latter breaking the run down into per-wave, per-worker and verification seconds. A total alone is not actionable — slow workers and slow acceptance tests need different responses.
 
 ## When a gate fails
 

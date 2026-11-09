@@ -28,6 +28,8 @@ class Settings:
     # two cannot share a number. 15 minutes was a measured Phase 0 build; two hours leaves
     # room for a repair pass without letting a wedged job run forever.
     job_timeout: int = 7200
+    # Hard cap for the scaled estimate, so a large plan cannot claim an unbounded run.
+    max_job_timeout: int = 21600
     max_repairs: int = 2
     memorix: str = ""
     # How many Pi harness workers may run at once. Each is a separate process tree.
@@ -53,11 +55,41 @@ class Settings:
             agent_timeout=int(os.environ.get("FACTORY_AGENT_TIMEOUT", "600")),
             worker_timeout=int(os.environ.get("FACTORY_WORKER_TIMEOUT", "1800")),
             job_timeout=int(os.environ.get("FACTORY_JOB_TIMEOUT", "7200")),
+            max_job_timeout=int(os.environ.get("FACTORY_MAX_JOB_TIMEOUT", "21600")),
             memorix=os.environ.get("FACTORY_MEMORIX", ""),
             worker_concurrency=int(os.environ.get("FACTORY_WORKER_CONCURRENCY", "3")),
             profiles={k: Profile.model_validate(v) for k, v in raw.get("profiles", {}).items()},
             targets={k: Target.model_validate(v) for k, v in raw.get("targets", {}).items()},
         )
+
+    def job_deadline_seconds(self, plan=None, profile=None) -> int:
+        """A wall-clock budget that scales with how much work the plan actually contains.
+
+        `job_timeout` alone is a flat ceiling, and a flat ceiling is wrong in both
+        directions: too small and a legitimate larger plan dies with no defect to find, too
+        large and a wedged job wastes two hours. The cost of a build is dominated by its
+        **waves**, because tasks inside a wave run concurrently, so the estimate is
+        waves x worker budget plus one verification pass.
+
+        The configured `job_timeout` stays a floor, so an operator who raised it still gets
+        their number, and the estimate is capped by `max_job_timeout` so a pathological plan
+        (a hundred chained tasks) cannot claim an unbounded run.
+
+        With no plan the flat value is returned, which is what a plan-only job needs.
+        """
+        if plan is None:
+            return self.job_timeout
+        waves = plan.waves()
+        if not waves:
+            return self.job_timeout
+        concurrency = max(1, self.worker_concurrency)
+        # A wave with more tasks than the concurrency allows runs in ceil(n/concurrency)
+        # sequential batches, so it costs more than one worker budget.
+        worker_batches = sum(-(-len(wave) // concurrency) for wave in waves)
+        verify = profile.timeout if profile is not None else 0
+        repair = self.max_repairs * (profile.timeout if profile is not None else 0)
+        estimate = worker_batches * self.worker_timeout + verify + repair
+        return max(self.job_timeout, min(estimate, self.max_job_timeout))
 
     def validate(self):
         if len(self.operator_token) < 32 or len(self.release_token) < 32:
@@ -68,6 +100,8 @@ class Settings:
             raise ValueError("Invalid agent cost/time budget")
         if not 60 <= self.job_timeout <= 86400:
             raise ValueError("Job timeout must be between 60s and 24h")
+        if not self.job_timeout <= self.max_job_timeout <= 172800:
+            raise ValueError("Max job timeout must be at least the job timeout and at most 48h")
         if not 30 <= self.worker_timeout <= 14400:
             raise ValueError("Worker timeout must be between 30s and 4h")
         if not 1 <= self.worker_concurrency <= 16:

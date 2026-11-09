@@ -12,6 +12,7 @@ longer exists. Merging only after the whole wave is done keeps every worker's pr
 stable and makes the order of merges explicit instead of racy.
 """
 import json
+import time
 from pathlib import Path
 import threading
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -99,6 +100,7 @@ class ParallelBuilder:
             ready = plan.ready_set(completed)
             if not ready:
                 break
+            wave_started = time.monotonic()
             store.event(project["id"], job["id"], "wave.start",
                         {"tasks": [task.id for task in ready], "completed": sorted(completed)})
             wave = self._run_wave(project, job, root, ready, instructions_for, cancelled,
@@ -125,8 +127,13 @@ class ParallelBuilder:
                              "feedback": {o.task_id: findings.get(o.task_id, [])
                                           for o in failed}})
 
+            # Duration is recorded because a flat job timeout cannot be sized without it:
+            # the operator needs to know whether a 15-minute build spent its time in workers,
+            # in review, or in the merge barrier before deciding what to raise.
             store.event(project["id"], job["id"], "wave.done",
-                        {"merged": sorted(accepted), "completed": sorted(completed)})
+                        {"merged": sorted(accepted), "completed": sorted(completed),
+                         "seconds": round(time.monotonic() - wave_started, 1),
+                         "tasks": sorted(o.task_id for o in wave)})
 
         missing = {task.id for task in plan.tasks} - completed
         if missing:
@@ -196,12 +203,15 @@ class ParallelBuilder:
             instruction = instructions_for(task, {"brief": project["brief"], "base": base,
                                                   "attempt": prior_attempts + 1,
                                                   "feedback": "\n".join(prior_findings or [])})
+            worker_started = time.monotonic()
             transcript = self.worker.run_task(worktree, instruction,
                                              timeout=self.settings.worker_timeout,
                                              cancelled=cancelled)
+            worker_seconds = round(time.monotonic() - worker_started, 1)
             commit = products.commit_all(worktree, f"{task.title} ({task.id})")
             changed = products.changed_files(worktree, base)
-            detail = {"changed": changed, "transcript": transcript[-4000:]}
+            detail = {"changed": changed, "transcript": transcript[-4000:],
+                      "seconds": worker_seconds}
 
             if review_for and changed:
                 diff = products.diff_against(worktree, base)

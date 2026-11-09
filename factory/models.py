@@ -114,6 +114,23 @@ class Plan(StrictModel):
         by_id = {task.id: task for task in self.tasks}
         return [by_id[name] for name in self.execution_order()]
 
+    def waves(self) -> list[list[str]]:
+        """The dependency waves the builder will run, in order.
+
+        Derived from the same `ready_set` the builder uses, so a job deadline computed from
+        this cannot disagree with how the plan actually executes. Tasks inside one wave run
+        concurrently, which is why wave count — not task count — is what bounds wall time.
+        """
+        done: set[str] = set()
+        waves: list[list[str]] = []
+        while True:
+            ready = [task.id for task in self.ready_set(done)]
+            if not ready:
+                break
+            waves.append(sorted(ready))
+            done.update(ready)
+        return waves
+
 
 # Example and template env files carry no secret; they are the documented way to show which
 # variables an app needs. Blocking them outright made every app that ships an `.env.example`
