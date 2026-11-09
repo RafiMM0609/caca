@@ -66,6 +66,20 @@ A reviewer's `findings` are carried into the next attempt's prompt as `PREVIOUS 
 
 If a task is approved on a later attempt after an earlier rejection, the verdict stands but a `review.flaky_approval` event records the disagreement together with the earlier findings, and `worker.detail.flaky_approval` is set. That is a warning rather than a block because the worker may genuinely have fixed the issue; the operator should confirm rather than discover it in two review files.
 
+## Timeouts
+
+Three bounds, each for a different unit of work, because a single number cannot serve them:
+
+| Setting | Default | Bounds |
+| --- | --- | --- |
+| `FACTORY_AGENT_TIMEOUT` | 600s | one tool-free structured call (planner, tester, review) |
+| `FACTORY_WORKER_TIMEOUT` | 1800s | one Pi harness worker, which may edit a tree and build it |
+| `FACTORY_JOB_TIMEOUT` | 7200s | the whole job: waves, build, acceptance tests, repairs |
+
+Validation refuses a worker timeout larger than the job timeout, so one worker cannot outlive the run it belongs to.
+
+The planner is also told that verification belongs to the factory: the verifier runs the profile's install and build commands, the operator checks and every declared test flow after the merge barrier. A task whose only job is to repeat that costs a worker and a full model call, and its result is discarded.
+
 ## Restart and resume
 
 A retry after a scheduler restart creates a **new job id**, so a job cannot answer "which tasks are already done" by looking at itself. `Store.tasks_merged_for_project` requires two independent facts: a worker row recorded as merged **for this plan revision**, and that commit **still reachable from the product branch** (`products.ancestors`). A row alone is unsafe — a `git reset` or a failed conflict resolution leaves it behind — and a commit alone cannot say which task produced it. A `build.resumed` event records what was skipped.

@@ -196,7 +196,9 @@ class ParallelBuilder:
             instruction = instructions_for(task, {"brief": project["brief"], "base": base,
                                                   "attempt": prior_attempts + 1,
                                                   "feedback": "\n".join(prior_findings or [])})
-            transcript = self.worker.run_task(worktree, instruction, cancelled=cancelled)
+            transcript = self.worker.run_task(worktree, instruction,
+                                             timeout=self.settings.worker_timeout,
+                                             cancelled=cancelled)
             commit = products.commit_all(worktree, f"{task.title} ({task.id})")
             changed = products.changed_files(worktree, base)
             detail = {"changed": changed, "transcript": transcript[-4000:]}

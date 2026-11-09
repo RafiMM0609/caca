@@ -165,14 +165,23 @@ built and served correctly outside the factory.
 `db.py`, unused by the engine: they answer a per-job question that no caller needs. They are
 kept because tests use them to inspect outcomes, not because they are the resume path.
 
-### Phase 3 — Contract correctness (P3)
+### Phase 3 — Contract correctness (P3) — **DONE 2026-11-09**
 
 11. Tell the planner that verification belongs to the job, not to a worker task, and stop
-    planning a task that duplicates the verifier.
+    planning a task that duplicates the verifier. **Done:** the prompt now states that the
+    factory verifies the merged result — install, build, operator checks and every declared
+    test flow — and that a task which only re-runs those is a duplicate whose result is
+    discarded. Verified live: the same brief shape that previously produced four tasks
+    including `release-integration` (npm ci, build, start, smoke every endpoint) now produces
+    **two source tasks and no verification task**.
 12. Make the worker timeout appropriate for tasks that build, and document the relationship
-    between `FACTORY_AGENT_TIMEOUT` and real build times.
+    between `FACTORY_AGENT_TIMEOUT` and real build times. **Done:** `FACTORY_WORKER_TIMEOUT`
+    (default 1800s) bounds one harness worker and reaches `run_task` directly; `agent_timeout`
+    keeps bounding the cheap structured calls. Both are validated, and the worker timeout is
+    checked to be no larger than the job timeout so one worker cannot outlive the whole job.
 13. **Done when:** a live plan contains no redundant verification task and a normal build does
-    not time out.
+    not time out. **Done:** the live plan above; `tests/test_contract.py` also asserts that
+    forbidding a verification *task* did not remove the `test_flows` contract.
 
 ### Phase 4 — Capability (P4, only when the owner prioritises it)
 
