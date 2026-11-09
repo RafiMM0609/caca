@@ -280,6 +280,11 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                 except BaseException as exc:
                     result["status"] = "cancelled" if isinstance(exc, Cancelled) else "failed"
                     result["error"] = type(exc).__name__
+                    # A repair worker needs the assertion text, not just the exception class.
+                    # "AssertionError" tells it nothing; "None of 2 elements matched
+                    # [data-testid=hero] contained 'Kopi Senja'" tells it exactly what broke.
+                    # Bounded because a Playwright message can embed a whole DOM excerpt.
+                    result["message"] = str(exc)[:2000]
                     if console_errors:
                         result.setdefault("console_errors", console_errors)
                     if page_errors:

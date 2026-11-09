@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import json
 import logging
+import shutil
 import signal
 import threading
 import time
@@ -17,6 +18,7 @@ from .testing import TestSuite
 from .process import Cancelled
 from .verifier import Verifier
 from . import artifact as artifact_module
+from . import repair as repair_module
 from .workspace import atomic_json, package
 
 logger = logging.getLogger(__name__)
@@ -230,6 +232,96 @@ class Engine:
             finally:
                 abort.set()
 
+    def _verify_with_repair(self, project, job, profile, plan, root, work, source, suite,
+                            cancelled):
+        """Run the gates, and repair the application when they fail.
+
+        Phase 0 proved a build can run to a published artifact. It also proved the most likely
+        way a run dies: the gate is right and the code is wrong, or the gate is right and the
+        *plan* contradicts itself. Either way the job simply died, leaving the operator a
+        report and a screenshot to read by hand. This loop turns that into a bounded repair.
+
+        The repair worker is a normal Pi harness worker on the product repository's target
+        branch, because the failure is in the merged code, not in one task's worktree. Its
+        instruction is built from the tester's own report -- the failing case, the assertion
+        message, the screenshot path -- so it can act instead of guessing.
+
+        Bounded by ``max_repairs``, and exhaustion fails the job loudly. A partially working
+        application is never published as if it were verified.
+        """
+        store = self.store
+        output = work / "output"
+        evidence_dir = work / "testing"
+        for attempt in range(self.settings.max_repairs + 1):
+            if cancelled():
+                raise Cancelled("Cancelled before verification")
+            store.event(project["id"], job["id"], "verification.running", {"attempt": attempt + 1})
+            if evidence_dir.exists():
+                # Stale evidence from the previous attempt would be read as the current
+                # failure and send the repair worker after a problem it already fixed.
+                shutil.rmtree(evidence_dir)
+            if output.exists():
+                shutil.rmtree(output)
+
+            def test_event(kind, detail):
+                store.event(project["id"], job["id"], kind, detail)
+
+            try:
+                if suite:
+                    log = self.verifier.verify(profile, source, output, job["id"], cancelled,
+                                               suite=suite, evidence=evidence_dir,
+                                               on_event=test_event)
+                else:
+                    log = self.verifier.verify(profile, source, output, job["id"], cancelled)
+            except Cancelled:
+                raise
+            except Exception as exc:
+                evidence = repair_module.describe_evidence(work)
+                evidence["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+                atomic_json(work / f"repair-{attempt}-evidence.json", evidence)
+                store.event(project["id"], job["id"], "repair.evidence",
+                            {"attempt": attempt + 1,
+                             "failures": [f["flow_id"] for f in evidence["failures"]],
+                             "error": evidence["error"]})
+                if attempt >= self.settings.max_repairs:
+                    (work / "verification.txt").write_text(
+                        f"Verification failed after {attempt + 1} attempt(s). "
+                        f"Last error: {evidence['error']}")
+                    raise ValueError(
+                        "Verification failed after bounded repair attempts; "
+                        "inspect repair evidence before retrying") from exc
+                self._repair_then_retry(project, job, root, work, evidence, attempt, cancelled)
+                store.event(project["id"], job["id"], "repair.retrying", {"attempt": attempt + 1})
+                continue
+
+            (work / "verification.txt").write_text(log)
+            return log
+        raise ValueError("Verification loop ended without a result")
+
+    def _repair_then_retry(self, project, job, root, work, evidence, attempt, cancelled):
+        """Run one repair worker on the product branch and re-export the source to verify."""
+        store = self.store
+        products.checkout_target(root)
+        instruction = repair_module.repair_instruction(evidence)
+        (work / f"repair-{attempt}-instruction.txt").write_text(instruction)
+        store.event(project["id"], job["id"], "repair.running", {"attempt": attempt + 1})
+        before = products.head_commit(root)
+        transcript = self.parallel.worker.run_task(root, instruction, cancelled=cancelled)
+        (work / f"repair-{attempt}-transcript.txt").write_text(transcript[-100000:])
+        commit = products.commit_all(root, f"Repair failing gate (attempt {attempt + 1})")
+        # Compare against the commit from *before* this repair. `commit_all` returns HEAD
+        # unchanged when the worktree was clean, and diffing HEAD~1 would then report the
+        # previous attempt's changes as this one's.
+        changed = products.changed_files(root, before) if commit != before else []
+        store.event(project["id"], job["id"], "repair.committed",
+                    {"attempt": attempt + 1, "commit": commit[:12], "changed": changed[:20]})
+        if not changed:
+            # A repair that changed nothing will fail identically; say so instead of
+            # burning the remaining attempts on the same evidence.
+            raise ValueError("Repair worker produced no change; the gate cannot pass unchanged")
+        # Re-export from the repaired branch so the next attempt verifies the new code.
+        products.export_tree(root, work / "source")
+
     def _build(self, project, job, work, cancelled, tester_future=None, verification_only=False):
         store = self.store
         plan = Plan.model_validate_json(project["plan"])
@@ -313,17 +405,9 @@ class Engine:
         else:
             source = products.export_tree(root, work / "source")
 
-        store.event(project["id"], job["id"], "verification.running", {})
-        output = work / "output"
         suite = tester_future.result() if tester_future else None
-        if suite:
-            def test_event(kind, detail):
-                store.event(project["id"], job["id"], kind, detail)
-            log = self.verifier.verify(profile, source, output, job["id"], cancelled,
-                                       suite=suite, evidence=work / "testing", on_event=test_event)
-        else:
-            log = self.verifier.verify(profile, source, output, job["id"], cancelled)
-        (work / "verification.txt").write_text(log)
+        self._verify_with_repair(project, job, profile, plan, root, work, source,
+                                 suite, cancelled)
         if cancelled():
             raise Cancelled("Cancelled before publishing artifact")
         # The artifact is the product's codebase, not the build output: tracked source, a

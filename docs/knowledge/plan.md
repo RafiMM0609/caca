@@ -124,14 +124,23 @@ built and served correctly outside the factory.
   way a real run dies: answering a planner question by editing one field and not the others.
   A complete brief avoids it, which is how Phase 0 was closed.
 
-### Phase 1 — Repair loop (P1)
+### Phase 1 — Repair loop (P1) — **DONE 2026-11-09**
 
 5. On a verification or tester failure, persist structured evidence: the failing case, expected
-   versus actual, and the screenshot path.
+   versus actual, and the screenshot path. **Done:** `factory/testing.py` records the assertion
+   `message`, not just the exception class, and `factory/repair.py` extracts the failing cases
+   into `repair-<n>-evidence.json`.
 6. Spawn a repair worker on the product repository with that evidence, then re-verify. Bound it
    by `max_repairs` and fail loudly when exhausted — never silently ship a partial result.
+   **Done:** `Engine._verify_with_repair` loops; the repair worker runs on the product branch
+   because the failure is in merged code, and its brief quotes the failing selector, the
+   expected text, the actual message and the screenshot, while forbidding any edit to the test
+   suite or the checks.
 7. **Done when:** deliberately breaking one acceptance assertion causes a repair and a
-   republish, with an event trail showing attempt → evidence → fix.
+   republish, with an event trail showing attempt → evidence → fix. **Done:** covered by
+   `tests/test_repair.py` (7 tests). A repair that changes nothing is stopped immediately
+   instead of burning the remaining attempts on identical evidence, and exhaustion fails the
+   job with no artifact.
 
 ### Phase 2 — Durability (P2)
 
