@@ -46,7 +46,8 @@ class ScriptedWorker:
     def __init__(self):
         self.instructions = []
 
-    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
         self.instructions.append(instruction)
         target = Path(worktree) / "index.html"
         # A repair run must actually change the tree: a repair that commits nothing is
@@ -172,7 +173,8 @@ def test_repair_never_asks_the_worker_to_edit_the_tests(settings, store, project
 class ChangingWorker(ScriptedWorker):
     """Every run writes different content, so exhaustion is what stops the loop."""
 
-    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
         self.instructions.append(instruction)
         (Path(worktree) / "index.html").write_text(
             f"<title>attempt {len(self.instructions)}</title>")
@@ -200,7 +202,8 @@ def test_a_repair_that_changes_nothing_stops_instead_of_burning_attempts(setting
     class IdleWorker(ScriptedWorker):
         """Writes once, then never again: the repair run changes nothing."""
 
-        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
             self.instructions.append(instruction)
             if len(self.instructions) == 1:      # the initial implementation writes the file
                 (Path(worktree) / "index.html").write_text("<title>portfolio</title>")

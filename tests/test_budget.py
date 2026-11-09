@@ -101,7 +101,8 @@ def test_a_run_records_where_its_time_went(settings, store, project, plan):
             return plan if role == "planner" else Review(approved=True, findings=[])
 
     class Worker:
-        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
             (Path(worktree) / "index.html").write_text("<title>x</title>")
             return "ok"
 
@@ -142,7 +143,8 @@ def test_worker_durations_survive_into_the_worker_row(settings, store, project, 
             return plan if role == "planner" else Review(approved=True, findings=[])
 
     class Worker:
-        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
             (Path(worktree) / "index.html").write_text("<title>x</title>")
             return "ok"
 

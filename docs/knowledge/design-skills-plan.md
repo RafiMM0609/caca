@@ -43,7 +43,7 @@ Three layers because each answers a different question: *can the worker produce 
   moved is not reproducible, and `git status` must show when a skill changed.
 - **Not a sandbox change.** `--no-skills` stays on; only explicit paths are added.
 
-## Phase D1 — Plumbing (small)
+## Phase D1 — Plumbing (small) — **DONE 2026-11-09**
 
 1. `Task.skills: list[str]` — names of vendored skills for that task, default empty, capped at
    4, each matching `^[a-z][a-z0-9-]{0,40}$`. Validated against the vendor directory so a typo
@@ -54,14 +54,34 @@ Three layers because each answers a different question: *can the worker produce 
    that it is only for interface work.
 4. **Done when:** a task declaring a skill receives it, a task that declares none does not, and
    a path that escapes `skills/` is rejected.
+   **Done:** `Task.skills`, `PiWorker.skill_paths()`, `Settings.skills_dir()` (honouring
+   `FACTORY_SKILLS_DIR`), and `ParallelBuilder` passing the list through. A missing skill and a
+   name that escapes the vendor root are both errors rather than silent no-ops, because a task
+   that declares a skill and silently does not get one produces exactly the generic output the
+   skill existed to prevent. `tests/test_skills.py` covers all of it.
 
-## Phase D2 — The skills themselves (small, mostly procurement)
+## Phase D2 — The skills themselves (small, mostly procurement) — **DONE 2026-11-09**
 
 5. Vendor a small, deliberate set rather than everything upstream:
    `emil-design-eng`, `animate`, `apple-design`, `mobile-native`, `break-ui`.
    Record the source commit and licence in `skills/VENDORED.md`.
 6. A short `skills/README.md` explaining what each one is for, so the planner picks correctly.
 7. **Done when:** the files are present, attributed, and `git status` is clean after a build.
+   **Done:** five skills vendored at upstream commit `715c180`, MIT, recorded in
+   `skills/VENDORED.md` with the reason each is included and what was left out.
+
+### Measured effect, before D3/D4 exist
+
+Same task, same model, one flag apart: "create `card.html` containing one button".
+
+| | Output |
+| --- | --- |
+| without skills | 233 bytes — an unstyled `<button>Click me</button>` |
+| with `emil-design-eng` | 2065 bytes — easing tokens, layered shadow instead of a border, `:focus-visible`, `prefers-reduced-motion`, `100dvh`, optical letter-spacing |
+
+That is the whole argument for D1 in one comparison. It is also not proof of *taste*: the
+baseline is what an unguided agent produces, and the skilled output is what a good agent
+produces. Both are correct code; only one looks deliberate.
 
 ## Phase D3 — Review (medium)
 

@@ -2,7 +2,7 @@ import re
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -15,6 +15,21 @@ class Task(StrictModel):
     instructions: str = Field(min_length=10, max_length=12000)
     acceptance: list[str] = Field(min_length=1, max_length=30)
     depends_on: list[str] = Field(default_factory=list, max_length=30)
+    # Vendored design skills this worker should load, by directory name under `skills/`.
+    # Deliberately per task: a skill is prompt tokens on every run of the task that carries
+    # it, and an API worker has no use for animation guidance. Capped so a plan cannot
+    # bury the real instruction under reference material.
+    skills: list[str] = Field(default_factory=list, max_length=4)
+
+    @field_validator("skills")
+    @classmethod
+    def valid_skill_names(cls, value):
+        for name in value:
+            if not re.fullmatch(r"[a-z][a-z0-9-]{0,40}", name):
+                raise ValueError(f"Invalid skill name: {name!r} (use lowercase kebab-case)")
+        if len(set(value)) != len(value):
+            raise ValueError("Skill names must be unique within a task")
+        return value
 
 
 class AcceptanceFlow(StrictModel):

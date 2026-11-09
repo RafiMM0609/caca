@@ -214,7 +214,8 @@ def test_operator_check_blocks_publication_of_a_leaking_build(tmp_path, monkeypa
             assert role == "review", role
             return Review(approved=True, findings=[])
 
-        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                     skills=()):
             """Harness double whose build output embeds a credential."""
             (worktree / "server.cjs").write_text(server)
             (worktree / "build.cjs").write_text(

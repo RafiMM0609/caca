@@ -40,7 +40,8 @@ class ScriptedWorker:
                                            "<body><h1>Ada</h1><p>ada@example.test</p></body></html>"}
         self.calls = 0
 
-    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
         self.calls += 1
         for name, content in self.files.items():
             target = worktree / name
@@ -259,7 +260,8 @@ class FeedbackRecordingWorker:
     def __init__(self):
         self.instructions = []
 
-    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
         self.instructions.append(instruction)
         (worktree / "index.html").write_text(
             "<!doctype html><html lang='en'><head><title>Portfolio</title></head>"

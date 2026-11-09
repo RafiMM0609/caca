@@ -32,7 +32,8 @@ class FakeWorker:
         self.lock = threading.Lock()
         self.order = []
 
-    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
         with self.lock:
             self.active += 1
             self.peak = max(self.peak, self.active)
@@ -215,7 +216,8 @@ class FeedbackWorker(FakeWorker):
         self.instructions = []
         self.fix_on_attempt = fix_on_attempt
 
-    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
         self.instructions.append(instruction)
         return super().run_task(worktree, instruction, model, timeout, cancelled)
 

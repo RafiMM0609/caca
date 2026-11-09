@@ -60,7 +60,8 @@ def test_a_worker_receives_the_worker_timeout_not_the_agent_timeout(tmp_path):
     seen = {}
 
     class Worker:
-        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
             seen["timeout"] = timeout
             (Path(worktree) / "index.html").write_text("<title>x</title>")
             return "ok"

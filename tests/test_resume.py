@@ -27,7 +27,8 @@ class CountingWorker:
     def __init__(self):
         self.ran = []
 
-    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
         marker = "YOUR TASK ("
         start = instruction.index(marker) + len(marker)
         task_id = instruction[start:instruction.index(")", start)]
@@ -145,7 +146,8 @@ def test_an_expired_job_stops_instead_of_running_forever(settings, store, projec
             return plan if role == "planner" else Review(approved=True, findings=[])
 
     class Worker:
-        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
             time.sleep(0.01)
             (Path(worktree) / "index.html").write_text("<title>x</title>")
             return "ok"

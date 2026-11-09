@@ -17,7 +17,8 @@ class NodeAgent:
         self.broken = broken
         self.sources = []
 
-    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
         """Harness double: writes the fixture application into its worktree."""
         package = {'name': 'integration-fixture', 'version': '1.0.0', 'private': True,
                    'scripts': {'test:integration': 'node --test integration.cjs', 'build': 'node build.cjs'}}

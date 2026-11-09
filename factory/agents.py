@@ -149,8 +149,31 @@ class PiWorker:
             env.pop(name, None)
         return env
 
+    @staticmethod
+    def skill_paths(names, root: Path) -> list[str]:
+        """Resolve vendored skill names to absolute directories, or fail loudly.
+
+        The path is computed by the controller and must stay inside the vendor root: a name
+        that escapes it would let a plan point a worker at any directory on the machine. A
+        missing skill is an error rather than a silent no-op, because a task that declares a
+        skill and does not receive one produces exactly the generic output the skill existed
+        to prevent, with nothing to show it was skipped.
+        """
+        if not names:
+            return []
+        base = root.resolve()
+        resolved = []
+        for name in names:
+            candidate = (base / name).resolve()
+            if not candidate.is_relative_to(base):
+                raise PiWorkerError(f"Skill escapes the vendor directory: {name!r}")
+            if not (candidate / "SKILL.md").is_file():
+                raise PiWorkerError(f"Unknown skill: {name!r} (no SKILL.md under {base})")
+            resolved.append(str(candidate))
+        return resolved
+
     def run_task(self, worktree: Path, instruction: str, model: str = "", timeout: int = 0,
-                 cancelled=lambda: False) -> str:
+                 cancelled=lambda: False, skills=()) -> str:
         """Run one worker against its worktree. Returns the harness transcript tail.
 
         The worker is expected to change files itself; the controller commits and diffs
@@ -169,6 +192,12 @@ class PiWorker:
                     "--no-extensions", "--no-skills", "--no-mcp",
                     "--no-prompt-templates", "--no-themes", "--no-context-files",
                     "--no-session"]
+            # `--no-skills` disables *discovery*, which is what keeps a worker from reading
+            # configuration out of the product repository. An explicitly named path still
+            # loads, so operator-vendored skills reach the worker without weakening that
+            # guarantee. Measured, not assumed: see docs/knowledge/design-skills-plan.md.
+            for path in self.skill_paths(skills, settings.skills_dir()):
+                argv.extend(["--skill", path])
             try:
                 output = run(argv, cwd=worktree, env=env, input_data=instruction.encode(),
                              timeout=timeout or settings.agent_timeout, cancelled=cancelled)

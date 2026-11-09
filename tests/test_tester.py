@@ -47,7 +47,8 @@ class ParallelAgent:
         assert role == 'review', role
         return Review(approved=True, findings=[])
 
-    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
         """Harness double: writes the local application into its worktree."""
         assert self.preparing.wait(5), 'Worker must overlap tester preparation'
         self.implementing.set()

@@ -62,6 +62,19 @@ class Settings:
             targets={k: Target.model_validate(v) for k, v in raw.get("targets", {}).items()},
         )
 
+    def skills_dir(self) -> Path:
+        """Where vendored design skills live.
+
+        Defaults to `skills/` beside the package, resolved like `checks_dir` so a relative
+        setting never depends on whichever directory started the process. Kept out of `data/`
+        because skills are code, versioned with the factory, not operator state.
+        """
+        raw = os.environ.get("FACTORY_SKILLS_DIR", "").strip()
+        if not raw:
+            return Path(__file__).resolve().parents[1] / "skills"
+        configured = Path(raw).expanduser()
+        return (configured if configured.is_absolute() else Path.cwd() / configured).resolve()
+
     def job_deadline_seconds(self, plan=None, profile=None) -> int:
         """A wall-clock budget that scales with how much work the plan actually contains.
 

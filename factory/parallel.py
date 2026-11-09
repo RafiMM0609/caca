@@ -206,7 +206,8 @@ class ParallelBuilder:
             worker_started = time.monotonic()
             transcript = self.worker.run_task(worktree, instruction,
                                              timeout=self.settings.worker_timeout,
-                                             cancelled=cancelled)
+                                             cancelled=cancelled,
+                                             skills=task.skills)
             worker_seconds = round(time.monotonic() - worker_started, 1)
             commit = products.commit_all(worktree, f"{task.title} ({task.id})")
             changed = products.changed_files(worktree, base)

@@ -97,7 +97,8 @@ def test_studio_edit_reaches_the_product_and_is_verified(settings, store, projec
             assert role == "review", role
             return Review(approved=True, findings=[])
 
-        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                     skills=()):
             (worktree / "app.vue").write_text("<template>built</template>")
             (worktree / "content").mkdir(exist_ok=True)
             (worktree / "content" / "site.json").write_text('{"title":"Before"}')
