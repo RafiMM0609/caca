@@ -13,9 +13,12 @@ The owner is starting a software company from zero. The eventual range includes 
 1. [Knowledge index](docs/knowledge/README.md).
 2. [Origin and decisions](docs/knowledge/origin-and-decisions.md): user intent, scope changes and rationale.
 3. [Handoff](docs/knowledge/handoff.md): current implementation, evidence, gaps and continuation checklist.
-4. [Architecture](docs/architecture.md): components, the worker/merge model and trust boundaries.
-5. [Studio and tester](docs/studio-and-tester.md) for the editor journey and test contract.
-6. Relevant source/tests. Documentation is context; inspect code before claiming a capability exists.
+4. [Delivery plan](docs/knowledge/plan.md): the gap analysis, the current milestone and the phased route. Read this before picking work.
+5. [Architecture](docs/architecture.md): components, the worker/merge model and trust boundaries.
+6. [Studio and tester](docs/studio-and-tester.md) for the editor journey and test contract.
+7. Relevant source/tests. Documentation is context; inspect code before claiming a capability exists.
+
+When two documents disagree, the handoff's **dated evidence** wins and the others are stale — fix them in the same change rather than leaving the contradiction. Do not quote a test count from a document; run the suite.
 
 ## The execution model you must preserve
 

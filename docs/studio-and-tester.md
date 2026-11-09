@@ -57,13 +57,22 @@ The planner produces a task DAG plus `test_flows`. Two things then happen concur
   "kind": "browser",
   "goal": "A visitor can submit a valid demo contact enquiry.",
   "steps": [
-    "Visit / and confirm [data-testid=hero-title] is visible",
-    "Fill #email with person@example.test",
-    "Click button[type=submit]",
-    "Expect [data-testid=contact-result] to contain the documented confirmation"
-  ]
+    "Visit / and confirm the hero title is visible",
+    "Fill the email field with person@example.test",
+    "Click the submit button",
+    "Expect the result element to contain the documented confirmation"
+  ],
+  "selectors": {
+    "hero": "[data-testid=\"hero-title\"]",
+    "email": "#email",
+    "submit": "button[type=\"submit\"]",
+    "result": "[data-testid=\"contact-result\"]"
+  }
 }
 ```
+
+The `selectors` map is **required** for every `browser` flow and must be non-empty; a browser flow that declares no selectors is rejected, because it forces the tester to invent them. It is the single shared contract: the worker is told to render exactly these selectors, and the tester may only assert against them. Declare a selector for every state the flow observes, including fields shown while a row is being edited. Both API and browser flows may use semantic names; only the values are CSS.
+
 
 The controller validates flow coverage, case kinds, selectors, app-relative URLs and the presence of browser assertions. The suite is saved outside the generated application source. The tester has its own optional model setting and shares the job's atomically reserved model-call budget.
 
@@ -73,7 +82,16 @@ Once worker changes pass review and the configured build steps and operator chec
 
 API cases: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` with a JSON body, expected status and optional exact JSON response assertion. `HEAD` cases may not assert a body. Requests use the locally launched application URL and do not follow redirects.
 
-Browser cases must start with `goto` and may use `reload`, `fill`, `select`, `press`, `click`, `expect_text`, `expect_visible`, `expect_hidden`, `expect_count` and `expect_url`. A browser case must contain at least one assertion. Expected URLs must be app-relative. Browser HTTP requests are restricted to the app origin; service workers and WebSockets are blocked during testing. Arbitrary generated test JavaScript is not executed by this runner.
+A browser case may begin with **optional `request` actions as setup**, then must navigate with `goto`, and after `goto` may use browser actions only. Setup requests exist because a UI case often needs a record to exist before the page is opened — otherwise a case could only ever test an empty page. A `request` after `goto` is rejected, so a UI assertion can never be satisfied by an API response.
+
+Browser actions are `reload`, `fill`, `select`, `press`, `click`, `expect_text`, `expect_value`, `expect_visible`, `expect_hidden`, `expect_count` and `expect_url`. At least one assertion must appear after `goto`. Expected URLs must be app-relative. Browser HTTP requests are restricted to the app origin; service workers and WebSockets are blocked during testing. Arbitrary generated test JavaScript is not executed by this runner.
+
+Assertion semantics, which are deliberate and were each fixed against a real failing suite:
+
+- `expect_text` matches case-insensitively against **any** element the selector matches, and requires non-empty text. `.first`-only matching failed a correct page whose copy sat in the second of three cards; an empty pattern asserts nothing and is rejected.
+- `expect_value` compares a form field's **value** exactly. An `<input>` has no text content, so `expect_text` cannot observe it — use `expect_value` for "the field is empty after submit".
+- `expect_visible` requires every matched element to be visible, and fails on an empty match.
+- `click`, `fill` and `select` act on the **first** match. Playwright's strict mode raised when a selector matched several rows, so "delete the first row" threw instead of acting; a missing element still fails, and `expect_count` is how you assert how many exist.
 
 A browser case fails on an uncaught page exception or a console error. Console noise caused by the runner's own aborted external requests is filtered. A case whose page has a known, reviewed console error may set `allow_console_errors: true`; prefer fixing the error.
 
@@ -108,8 +126,12 @@ Primary capability references: [Nuxt Studio module](https://nuxt.com/modules/stu
 
 ## Executed validation result
 
+**2026-11-09 (current).** 161 Python tests passed, 3 skipped (164 collected); 15 JavaScript worker-state tests passed; ruff and `node --check` clean.
+
 **2026-11-07 (before workers became parallel).** 58 Python tests passed, 2 Docker tests skipped; 8 JavaScript worker-state tests passed. The real dashboard journey passed: create project, initialize Nuxt starter, clean npm installation, build, 3 API/browser cases, embedded Studio field editing, review diff, apply revision 2, rebuild, and all 3 API/browser cases again, with the original artifact retained. Tester model responses were scripted test doubles.
 
-**2026-11-08 (parallel worker lane).** 114 Python tests passed, 3 skipped. Live runs with `opencode-go/deepseek-v4.1-flash`: two concurrent workers merged a product in 6.8s; a full pipeline passed build, secret scan, API and browser cases; a fixer resolved a real merge conflict in 3 of 3 runs. A Studio regression where applied drafts never reached the product source was found and fixed, now covered by tests.
+**2026-11-08 (parallel worker lane).** The full journey was re-run under the parallel worker lane and passed (`scripts/validate_studio_journey.py`, `FACTORY_ALLOW_NATIVE=1`, real Chromium, exit 0): dashboard create → real `npm ci` + `nuxt build` (907-file artifact) → 3 API/browser cases → embedded Nuxt Studio edit → diff → apply → real rebuild at revision 2 → 3 cases re-run. Both jobs ended `succeeded`, `report.json` is `passed` with `console_errors: []` and `page_errors: []`, and the edit is present in revision 2's `content/site.json`. The operator check ran (`CHECK 1 PASS`), which also proves the relative `checks_dir` resolves.
 
-**Not yet re-validated:** the full Nuxt Studio journey with parallel workers. The starter path is covered by a test that uses a stand-in build command rather than a real `npm ci` + `nuxt build`. Treat the 2026-11-07 journey result as historical until it is re-run.
+Live runs with `opencode-go/deepseek-v4.1-flash` also produced: two concurrent workers merging a product in 6.8s; a full pipeline passing build, secret scan, API and browser cases; and a fixer resolving a real merge conflict in 3 of 3 runs. A Studio regression where applied drafts never reached the product source was found and fixed, now covered by tests.
+
+**Scope of that result.** The journey covers one starter-shaped project whose planner and tester responses are scripted test doubles; npm, the Nitro server, HTTP and Chromium are real. It does not exercise live model workers producing a Nuxt application from a brief. The AI half of this path is still a double.

@@ -4,7 +4,9 @@ A single-operator Linux software factory. An operator writes a brief; a Pi plann
 
 Continuing agents: start with [AGENTS.md](AGENTS.md), then the [knowledge and project history](docs/knowledge/README.md).
 
-**Release status: pre-production 0.1.0.** The workflow, parallel worker lane and container isolation have automated tests. Live end-to-end runs were performed with `opencode-go/deepseek-v4.1-flash` (see [handoff](docs/knowledge/handoff.md)), but a full Nuxt Studio journey has not been re-validated since workers became parallel. This is not a certified production system for POS, financial transactions, ERP, or mutually untrusted tenants.
+**Release status: pre-production 0.1.0.** The workflow, parallel worker lane and container isolation have automated tests. Live end-to-end runs were performed with `opencode-go/deepseek-v4.1-flash`, including a full Nuxt Studio journey re-run under the parallel worker lane and a SQLite CRUD application that passed 11 of 11 acceptance cases. See [handoff](docs/knowledge/handoff.md) for the dated evidence and its caveats; the run logs live in ignored local directories and are not in this repository.
+
+**The parts are proven; the whole is not.** No single `build` job has ever completed end to end — every published artifact came from a separately enqueued `verify` job driven by a script. Closing that loop is Phase 0 of the [delivery plan](docs/knowledge/plan.md). This is not a certified production system for POS, financial transactions, ERP, or mutually untrusted tenants.
 
 ## How work runs
 

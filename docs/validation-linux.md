@@ -38,10 +38,10 @@ Note that the `node` example does not configure operator checks. The Studio prof
 
 ## Executed results
 
-**2026-11-08 (current).**
+**2026-11-09 (current, re-measured at `3e49524`).**
 
-- `pytest -q`: **114 passed, 3 skipped**, 1 upstream Starlette/httpx deprecation warning. Two skips are Docker integration tests; the third is the opt-in live worker test, which passed when run separately with `FACTORY_LIVE_WORKER=1`.
-- `node --test tests/workers.test.cjs`: **8 passed**.
+- `pytest -q`: **161 passed, 3 skipped** (164 collected), 1 upstream Starlette/httpx deprecation warning. Two skips are Docker integration tests; the third is the opt-in live worker test, which passed when run separately with `FACTORY_LIVE_WORKER=1`.
+- `node --test tests/workers.test.cjs`: **15 passed**.
 - `ruff check factory tests scripts/validate_studio_journey.py`: passed.
 - `node --check` on both dashboard scripts: passed.
 - Dashboard smoke test in real Chromium: login, workspace, project detail, no page errors.
@@ -66,7 +66,7 @@ Other covered behaviour: atomic claims, stale approval, cancellation, restart re
 
 Yes, through the plan revision workflow: edit and save the completed project's plan, approve its new revision, and rebuild. A fresh job starts from the product repository's current branch, so it inherits previously committed work. Old approvals are rejected and prior artifacts are preserved. Do not manually mutate archived job source directories, and do not hand-edit a product repository while a job is running.
 
-Studio content editing is a separate path and is documented in [Studio and tester](studio-and-tester.md). The dashboard is NOT a full source-code editor, a visual UI editor for arbitrary components, or a chat-based change-request editor. It also does not yet display worktrees, waves or the workers table.
+Studio content editing is a separate path and is documented in [Studio and tester](studio-and-tester.md). The dashboard is NOT a full source-code editor, a visual UI editor for arbitrary components, or a chat-based change-request editor. It does display waves, per-worker outcome, branch names and review verdicts; it does not display worktree paths.
 
 ## Testing roles and limits
 

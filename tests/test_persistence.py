@@ -5,6 +5,8 @@ only directory the app could write to was deleted with the disposable build tree
 therefore could not pass "create a record, then read it back" even once.
 """
 
+import json
+
 import pytest
 
 from factory.local_app import app_data_dir, expand_env
@@ -33,15 +35,24 @@ def test_profile_env_only_expands_known_placeholders(tmp_path):
     assert expanded["DATA_DIR"] == str(tmp_path)
 
 
-def test_data_dir_lives_beside_the_repo_not_inside_it(tmp_path):
-    """A database committed into the product repo would ship in the artifact and be clobbered."""
+def test_data_dir_lives_outside_the_product_repository(tmp_path):
+    """A database inside the product repo could be committed by `git add -A` and clobbered."""
+    from factory import products
+
     class Settings:
         data = tmp_path
 
+    repo = products.ensure_repo(tmp_path, "project-1")
     path = app_data_dir(Settings, "project-1")
-    assert path == tmp_path / "products" / "project-1" / "data"
     assert path.is_dir()
-    assert ".git" not in path.parts
+    # The real invariant is structural, not a string check on the path: the data
+    # directory must not be reachable from the product's git working tree at all.
+    assert not path.is_relative_to(repo), f"{path} must not live inside the product repo {repo}"
+    # And writing the database must leave the repository clean, so a commit cannot pick it up.
+    (path / "app.db").write_text("not a real database\n")
+    assert products.changed_files(repo, products.head_commit(repo)) == []
+    status = products._run(["status", "--porcelain"], cwd=repo)
+    assert status == "", f"product repository must stay clean, got {status!r}"
 
 
 SERVER = '''
@@ -297,3 +308,73 @@ def test_each_case_gets_its_own_time_budget(tmp_path):
         assert time.monotonic() - started < 60
     finally:
         server.close()
+
+
+# State kept in a file next to the server, with no DATABASE_URL and no profile `env`.
+# Isolation used to require the profile to declare `{data}`, so a profile like this shared
+# one process and one store across every case and a correct application failed the suite.
+CWD_STATE_SERVER = '''
+const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+const file = path.join(__dirname, "state.json");
+function load() { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : []; }
+http.createServer((req, res) => {
+  res.setHeader("content-type", "application/json");
+  const items = load();
+  if (req.url === "/api/health") { res.end(JSON.stringify({ status: "ok" })); return; }
+  if (req.url === "/api/items" && req.method === "POST") {
+    let body = ""; req.on("data", c => body += c);
+    req.on("end", () => {
+      const next = load(); next.push(JSON.parse(body || "{}"));
+      fs.writeFileSync(file, JSON.stringify(next));
+      res.statusCode = 201; res.end(JSON.stringify({ id: next.length }));
+    });
+    return;
+  }
+  if (req.url === "/api/items") { res.end(JSON.stringify(items)); return; }
+  res.statusCode = 404; res.end("{}");
+}).listen(Number(process.env.PORT || 0), "127.0.0.1");
+'''
+
+
+def test_verifier_isolates_cases_even_without_profile_env(tmp_path, monkeypatch):
+    """Isolation must not depend on the profile declaring `{data}`.
+
+    This profile passes no environment at all and the application persists to a file beside
+    itself. Two cases each create a record and assert `id: 1`; without a fresh process per
+    case the second one sees `id: 2` and a correct application fails.
+    """
+    import shutil as _shutil
+
+    if not _shutil.which("node"):
+        pytest.skip("node required")
+    monkeypatch.setenv("FACTORY_ALLOW_NATIVE", "1")
+
+    from factory.testing import TestSuite
+    from factory.verifier import NativeVerifier
+
+    source = tmp_path / "source"
+    source.mkdir(parents=True)
+    (source / "server.cjs").write_text(CWD_STATE_SERVER)
+    (source / "build.cjs").write_text(
+        "const fs=require('node:fs');fs.mkdirSync('dist');fs.writeFileSync('dist/index.html','<title>ok</title>');")
+    profile = Profile(runner="native", commands=[["node", "build.cjs"]], tester=True,
+                      artifact_dir="dist", serve_argv=["node", "server.cjs"],
+                      readiness_path="/api/health", qa_timeout=90)
+    assert profile.env == {}, "this regression only means something if the profile declares no env"
+
+    create = {"action": "request", "method": "POST", "path": "/api/items", "body": {"n": 1},
+              "status": 201, "json_equals": {"id": 1}}
+    suite = TestSuite(summary="Per-case isolation without a profile env.", cases=[
+        {"flow_id": "first", "name": "First create sees id 1", "kind": "api", "actions": [dict(create)]},
+        {"flow_id": "second", "name": "Second create also sees id 1", "kind": "api", "actions": [dict(create)]},
+    ])
+    events = []
+    NativeVerifier().verify(profile, source, tmp_path / "out", "job-envless", lambda: False,
+                            suite=suite, evidence=tmp_path / "testing",
+                            on_event=lambda kind, detail: events.append(kind))
+    report = json.loads((tmp_path / "testing" / "report.json").read_text())
+    assert report["status"] == "passed", report
+    assert all(c.get("isolated") for c in report["cases"]), report
+    assert "tester.passed" in events

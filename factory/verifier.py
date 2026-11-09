@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from .process import run, ProcessError
-from .workspace import extract, clone_tree, files_under
+from .workspace import extract, clone_tree, clone_build_tree, files_under
 
 DOCKER = ["docker", "--host=unix:///var/run/docker.sock"]
 
@@ -151,28 +151,44 @@ class NativeVerifier:
                 try:
                     url = app.wait_ready(profile.readiness_path, timeout=60, cancelled=cancelled)
                     on_event("tester.running", {"cases": len(suite.cases)})
-                    isolate = None
-                    if any("{data}" in value for value in profile.env.values()):
-                        # A profile that gives the app a data directory can also let it
-                        # persist records, so cases cannot safely share one database. Each
-                        # case gets a fresh directory and a freshly started process.
-                        case_counter = {"n": 0}
+                    # Every case gets a fresh process, a fresh data directory and a fresh copy of
+                    # the build tree, always.
+                    #
+                    # Isolation used to depend on the profile declaring `{data}`, which left any
+                    # tester-enabled profile without `env` sharing one process and one database
+                    # across all cases: the first case inserted a record, the next asserted on
+                    # it, and a correct application failed.
+                    #
+                    # A fresh process alone is not enough either. An application that persists to
+                    # a file beside itself, or writes a cache or an upload into its own directory,
+                    # carries that state into the next case because every case runs against the
+                    # same build tree. Each case therefore gets its own copy of the tree as well.
+                    # The cost is one application start plus one copy per case, and `qa_timeout`
+                    # is per case precisely so that cost is affordable.
+                    case_counter = {"n": 0}
 
-                        def isolate(_context, _work=work, _base_env=env, _profile=profile,
-                                    _counter=case_counter):
-                            _counter["n"] += 1
-                            case_data = scratch_data / f"case-{_counter['n']:02d}"
-                            case_data.mkdir(parents=True, exist_ok=True)
-                            case_env = dict(_base_env)
-                            case_env.update(expand_env(_profile.env, data_dir=case_data, app_dir=_work))
-                            case_app = LocalApp(_profile.serve_argv, _work, case_env)
-                            try:
-                                case_url = case_app.wait_ready(_profile.readiness_path,
-                                                               timeout=60, cancelled=cancelled)
-                            except BaseException:
-                                case_app.close()
-                                raise
-                            return case_url, case_app.close
+                    def isolate(_context, _work=work, _base_env=env, _profile=profile,
+                                _counter=case_counter):
+                        _counter["n"] += 1
+                        label = f"case-{_counter['n']:02d}"
+                        case_data = scratch_data / label
+                        case_data.mkdir(parents=True, exist_ok=True)
+                        case_tree = scratch_data / (label + "-tree")
+                        # A build tree legitimately holds symlinks (node_modules/.bin,
+                        # Nitro asset links); the strict clone_tree would reject them.
+                        clone_build_tree(_work, case_tree)
+                        case_env = dict(_base_env)
+                        if _profile.env:
+                            case_env.update(expand_env(_profile.env, data_dir=case_data,
+                                                       app_dir=case_tree))
+                        case_app = LocalApp(_profile.serve_argv, case_tree, case_env)
+                        try:
+                            case_url = case_app.wait_ready(_profile.readiness_path,
+                                                           timeout=60, cancelled=cancelled)
+                        except BaseException:
+                            case_app.close()
+                            raise
+                        return case_url, case_app.close
 
                     report = run_suite(suite, url, evidence, profile.qa_timeout, cancelled,
                                        isolate=isolate)

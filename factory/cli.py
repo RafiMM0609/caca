@@ -81,8 +81,10 @@ def main():
             raise SystemExit(
                 "serve_argv does not resolve inside the published artifact (looked for {})".format(
                     entry if argv else "<empty>"))
-        data_dir = settings.data / "products" / project["id"] / "data"
-        data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # One definition of the data location, shared with the verifier: duplicating the
+        # path here is how the two drifted apart before.
+        from .local_app import app_data_dir
+        data_dir = app_data_dir(settings, project["id"])
         env = local_env()
         env.update(expand_env(profile.env, data_dir=data_dir, app_dir=source))
         env.update({"PORT": str(args.port), "NITRO_PORT": str(args.port), "HOST": "127.0.0.1",

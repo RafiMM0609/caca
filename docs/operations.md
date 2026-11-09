@@ -12,6 +12,7 @@ Start API, build lane and deploy lane as separate services. Never start multiple
 | --- | --- |
 | `$FACTORY_DATA/factory.sqlite3` | Workflow state: projects, plans, jobs, events, workers, deployments |
 | `$FACTORY_DATA/products/<project-id>/` | **Product git repository** — source, history and branches |
+| `$FACTORY_DATA/product-data/<project-id>/` | Durable per-product data (`{data}`): the generated application's SQLite file and uploads. Deliberately **outside** the product repository |
 | `$FACTORY_DATA/jobs/<job-id>/` | Per-job evidence, exported source, artifacts, test reports |
 | `$FACTORY_DATA/workers/<job-id>/` | Per-worker worktrees (transient; safe to prune when no job is running) |
 | `$FACTORY_DATA/edits/<edit-id>/` | Studio draft sources |
@@ -32,7 +33,7 @@ Keep the checkout path free of spaces. Nuxt Content percent-encodes a space into
 
 **Persistence and `env`.** A native profile may declare `env`, a map of uppercase names to values, which reaches the build, the operator checks and the served application. Two placeholders expand: `{data}` is the product's durable data directory and `{app}` is the build tree. The shipped default is `{"DATABASE_URL": "file:{data}/app.db", "DATA_DIR": "{data}"}`. Validation rejects unknown placeholders, lowercase names, and every `FACTORY_*` name or provider credential — the generated application is the least trusted process in the factory and must never receive a factory token or an API key. Secrets belong in the operator's environment, not in a profile.
 
-Two data directories exist and they are not interchangeable. **Verification** gets a throwaway directory inside its disposable build tree, so a case that creates a record and then lists records sees the same result every run instead of inheriting rows from the previous build. **`factory run <project>`** serves the published artifact against `data/products/<id>/data`, which sits beside the product repository rather than inside it: a committed SQLite file would be overwritten by the next checkout and would ship in the artifact. `serve_argv` resolves against the artifact root, which already corresponds to `artifact_dir`, so a leading `release/` on the entry point is stripped rather than doubled.
+Two data directories exist and they are not interchangeable. **Verification** gets a throwaway directory inside its disposable build tree, so a case that creates a record and then lists records sees the same result every run instead of inheriting rows from the previous build. **`factory run <project>`** serves the published artifact against `data/product-data/<id>`, which sits **outside** the product's git working tree: a SQLite file inside the repository could be committed by `git add -A`, would be clobbered by the next checkout, and would ship in the artifact. A generated application may also legitimately own a `data/` directory of its own, so an inside-the-repo path would collide with real source. `app_data_dir()` in `factory/local_app.py` is the single definition; do not recompute the path elsewhere. `serve_argv` resolves against the artifact root, which already corresponds to `artifact_dir`, so a leading `release/` on the entry point is stripped rather than doubled.
 
 The default stack for a new product is a local SQLite file, and the planner and worker briefs say so explicitly. An external database is chosen only when the brief names one (Supabase, Postgres, MySQL, or any hosted database with a hostname and password). The Docker verification profile has no persistent mount, so treat persistence as a native-runner capability.
 
@@ -73,7 +74,7 @@ If SSH is interrupted, inspect the remote `release.json`. Run `sf-release status
 
 `factory backup /safe/path/factory.sqlite3` creates a consistent online SQLite snapshot. For a complete backup, stop the schedulers, then copy the verified SQLite snapshot, **the entire `products/` directory**, the `jobs/` and `memory/` directories, and configuration. Encrypt the backup and store it off-host. Back up secrets separately.
 
-Do not back up `workers/` — those are transient worktrees. Do back up `products/`, because it holds the only history of client code.
+Do not back up `workers/` — those are transient worktrees. Do back up `products/`, because it holds the only history of client code, and `product-data/`, because it holds each client's live records (the application's SQLite file) and cannot be reconstructed from source.
 
 Test restoration into an isolated instance: integrity check, project/job history, product repository branches, artifact digest verification, and memory access. Never point a restore drill at production targets. Restore files with correct ownership before starting workers. Interrupted jobs require inspection and explicit approval to retry.
 
@@ -81,7 +82,7 @@ Monitor worker heartbeat age, failed/unknown jobs, memory failures, disk use and
 
 ## Production acceptance still required
 
-Live Pi generation/review with the selected provider across all stages; live Memorix roundtrip; HTTPS and token rotation; actual staging/production SSH deployment; service restart, health failure and rollback; server reboot/interrupted-release recovery; full backup restoration; a re-run of the real Nuxt Studio journey under the parallel worker lane; and application-specific browser/security/business tests. No remote production deployment was performed during implementation.
+Live Pi generation/review with the selected provider across all stages; a **single `build` job that runs a plan through workers, verification and publication in one attempt** (none has ever completed — every published artifact came from a separately enqueued `verify` job); live Memorix roundtrip; HTTPS and token rotation; actual staging/production SSH deployment; service restart, health failure and rollback; server reboot/interrupted-release recovery; full backup restoration; and application-specific browser/security/business tests. No remote production deployment was performed during implementation.
 
 ## Client separation (not implemented)
 

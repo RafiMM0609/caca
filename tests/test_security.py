@@ -85,3 +85,29 @@ def test_subprocess_stdin_and_nonzero():
     with pytest.raises(ProcessError, match="exit code 3"):
         run([sys.executable, "-c", "raise SystemExit(3)"])
 
+
+
+def test_build_tree_clone_preserves_symlinks_but_source_clone_rejects_them(tmp_path):
+    """A build tree legitimately contains symlinks; generated *source* must not.
+
+    `node_modules/.bin/*` is entirely symlinks, so the per-case copy of a real Node build
+    tree cannot use the strict source walk without failing every Nuxt verification. The
+    strict walk must stay strict for source, which is the path that moves generated code.
+    """
+    from factory.workspace import clone_build_tree, clone_tree
+
+    build = tmp_path / "built"
+    (build / "node_modules" / ".bin").mkdir(parents=True)
+    (build / "node_modules" / "pkg").mkdir(parents=True)
+    (build / "node_modules" / "pkg" / "cli.js").write_text("#!/usr/bin/env node\n")
+    (build / "node_modules" / ".bin" / "cli").symlink_to("../pkg/cli.js")
+
+    case_tree = tmp_path / "case-01-tree"
+    clone_build_tree(build, case_tree)
+    link = case_tree / "node_modules" / ".bin" / "cli"
+    assert link.is_symlink(), "symlinks must be preserved, not dereferenced"
+    assert link.read_text() == "#!/usr/bin/env node\n"
+
+    # The strict source clone must keep rejecting symlinks.
+    with pytest.raises(ValueError, match="Symlinks are not allowed"):
+        clone_tree(build, tmp_path / "strict")

@@ -62,8 +62,27 @@ Ordered by what blocks the stated goal, not by how interesting it is.
 9. **Windows is unfinished.** `fcntl`, `killpg` and POSIX process groups appear in four modules.
    Windows was requested; do not claim it works.
 10. **Documentation has drifted.** The handoff still says the dashboard does not render waves
-    (it now does), quotes 137 tests (it is 158), and has duplicate list numbering. A stale
-    handoff actively misleads the next agent.
+    (it now does), quotes several different test counts, and has duplicate list numbering. A
+    stale handoff actively misleads the next agent.
+    **Fixed 2026-11-09:** the outstanding drift on status, dashboard state, test counts,
+    tester contract, product data layout and list numbering was corrected across the docs.
+    Where documents disagree, the handoff's dated evidence is authoritative; re-run the
+    checks rather than trusting a quoted number.
+11. ~~**The product data directory sits inside the product repository.**~~ **Fixed 2026-11-09.**
+    `local_app.app_data_dir()` returned `data/products/<id>/data`, *inside* the product's git
+    working tree, while `docs/operations.md` and its own docstring claimed it sat beside it.
+    A worker running `git add -A` could commit the live SQLite file; publication stayed safe
+    only because `export_tree()` copies tracked files and the verifier builds from that
+    export. The directory now lives at `data/product-data/<id>`, outside the repository, and
+    `factory/cli.py` calls `app_data_dir()` instead of recomputing the path. The old test was
+    a tautology (it asserted `".git"` was absent from the path parts, not that the path was
+    outside the tree); it now asserts `not path.is_relative_to(repo)` and that writing the
+    database leaves the repository clean. Confirmed to fail when the fix is reverted.
+12. **Acceptance cases are only isolated when the profile declares `{data}`.** `verifier.py`
+    enables per-case isolation through `if any("{data}" in value for value in profile.env.values())`.
+    A tester-enabled profile without `env` shares one process and one database across every
+    case, which is the contamination the isolation work was meant to remove. Unproven for
+    profiles that keep state anywhere other than the data directory.
 
 ## Phases
 

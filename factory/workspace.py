@@ -87,8 +87,34 @@ def atomic_json(path: Path, value):
 
 
 def clone_tree(source: Path, target: Path):
+    """Copy a source tree that must contain only regular files.
+
+    Strict on purpose: this is the path that moves *generated application source* between
+    owner-controlled directories, so a symlink there is a defect and is rejected.
+    """
     list(files_under(source))
     shutil.copytree(source, target)
+
+
+def clone_build_tree(source: Path, target: Path):
+    """Copy an already-built tree for one acceptance case, preserving symlinks.
+
+    This is deliberately laxer than :func:`clone_tree` and must not be confused with it.
+    A **build** tree legitimately contains symlinks: `node_modules/.bin/*` is nothing but
+    symlinks, and Nuxt/Nitro link assets inside their output. The strict
+    :func:`files_under` walk rejects any symlink, so reusing it here would fail every real
+    Node verification at the per-case copy step.
+
+    The safety burden stays where it belongs: this tree was produced by the verifier from
+    the approved product source, it is never tarred into the artifact (that path uses
+    ``package()`` and ``files_under``), and it is deleted with the scratch directory.
+    Symlinks are copied as links, never dereferenced, so a link cannot pull an outside file
+    into the tree.
+    """
+    if not source.is_dir() or source.is_symlink():
+        raise ValueError("Build tree source must be a real directory")
+    # dirs_exist_ok is safe here: the destination is a fresh per-case path.
+    shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True)
 
 
 def extract(data: bytes, destination: Path):

@@ -22,12 +22,17 @@ def local_env():
 def app_data_dir(settings, project: str) -> Path:
     """The persistent data directory for one product.
 
-    It lives beside the product's git repository, never inside it: a SQLite file committed
-    to the repository would be overwritten by the next checkout, and it would be shipped in
-    the artifact. It also sits outside the verifier's disposable build tree, which is deleted
-    after every verification, so data written by one run survives the next.
+    It sits **outside** the product's git working tree, as a sibling directory under
+    ``data/product-data/<product>``. Living inside the repository was a defect: the
+    controller commits a worktree with ``git add -A``, so a live SQLite file could be
+    committed into the product history and would then be clobbered by the next checkout.
+    A generated application may also legitimately own a ``data/`` directory of its own,
+    so an inside-the-repo path collides with real source.
+
+    It is still outside the verifier's disposable build tree, which is deleted after every
+    verification, so data written by one run survives the next.
     """
-    path = settings.data / "products" / project / "data"
+    path = Path(settings.data) / "product-data" / project
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     return path
 
