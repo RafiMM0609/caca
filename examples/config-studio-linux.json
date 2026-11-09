@@ -28,12 +28,7 @@
         [
           "python3",
           "{checks}/secret_scan.py",
-          "release"
-        ],
-        [
-          "python3",
-          "{checks}/js_syntax.py",
-          "release"
+          "."
         ]
       ],
       "env": {

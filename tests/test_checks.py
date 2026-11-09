@@ -140,12 +140,19 @@ def test_example_profiles_wire_real_checks():
 
 
 def test_the_studio_profile_runs_the_full_check_set():
-    """The shipped editing profile is the one an operator actually uses; guard its gates."""
+    """The shipped editing profile is the one an operator actually uses; guard its gates.
+
+    The artifact is now the product's source tree, so the scan target is the checkout rather
+    than a build directory. `js_syntax` was removed from this profile: it parsed a build
+    output that is no longer published, and the source it would now see is TypeScript and
+    Vue SFCs, which `node --check` cannot parse.
+    """
     data = json.loads((ROOT / "examples" / "config-studio-linux.json").read_text())
     profile = Profile.model_validate(data["profiles"]["nuxt-studio"])
     joined = [" ".join(argv) for argv in profile.checks_argv]
-    assert any("secret_scan" in line for line in joined), "a leaking build must be blocked"
-    assert any("js_syntax" in line for line in joined), "unparseable JS must be blocked"
+    assert any("secret_scan" in line for line in joined), "a leaking artifact must be blocked"
+    assert not any("js_syntax" in line for line in joined), \
+        "js_syntax targets build output, which this profile no longer publishes"
 
 
 def test_native_checks_dir_without_checks_argv_is_rejected():

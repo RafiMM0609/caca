@@ -16,6 +16,7 @@ from . import products
 from .testing import TestSuite
 from .process import Cancelled
 from .verifier import Verifier
+from . import artifact as artifact_module
 from .workspace import atomic_json, package
 
 logger = logging.getLogger(__name__)
@@ -324,8 +325,17 @@ class Engine:
         (work / "verification.txt").write_text(log)
         if cancelled():
             raise Cancelled("Cancelled before publishing artifact")
-        artifact = package(output, work / "artifact.tar.gz")
-        artifact.update({"job_id": job["id"], "revision": project["revision"]})
+        # The artifact is the product's codebase, not the build output: tracked source, a
+        # README describing how to run it, and a fresh single-commit git history. Build
+        # output is excluded because `npm ci && npm run build` regenerates it from the
+        # locked manifest, and shipping it would be large and silently stale.
+        published = work / "published"
+        artifact_meta = artifact_module.assemble(
+            project, profile, plan, source, published,
+            commit_message=f"{project['name']}: verified build, revision {project['revision']}")
+        artifact = package(published, work / "artifact.tar.gz")
+        artifact.update({"job_id": job["id"], "revision": project["revision"],
+                         "kind": "source", **artifact_meta})
         atomic_json(work / "artifact.json", artifact)
         if studio_branch:
             products.checkout_target(root)

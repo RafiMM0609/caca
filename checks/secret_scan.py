@@ -28,6 +28,10 @@ ENV_SECRETS = ("OPENCODE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMIN
 
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".map"}
 MAX_BYTES = 20_000_000
+# Dependency and build directories are not the operator's code. Scanning them is slow and
+# noisy: a vendored package legitimately contains strings that look like credentials (test
+# fixtures, documentation examples), and the point of this check is what the product ships.
+SKIP_DIRS = {"node_modules", ".git", ".nuxt", ".output", "release", ".data", "dist", "build"}
 
 
 def main():
@@ -43,6 +47,8 @@ def main():
     scanned = 0
     for path in root.rglob("*"):
         if not path.is_file() or path.is_symlink():
+            continue
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
             continue
         if path.suffix.lower() in SKIP_SUFFIXES:
             continue

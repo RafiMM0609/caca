@@ -42,7 +42,10 @@ def test_reject_malicious_tar(tmp_path, kind):
             member.type = tarfile.SYMTYPE if kind == "symlink" else tarfile.LNKTYPE
             member.linkname = "/etc/passwd"
         if kind == "oversize":
-            member.size = 20_000_001
+            # Follow the real ceiling rather than a hardcoded number: the limit moved from
+            # 20 MB to MAX_ARTIFACT when the artifact became the source tree.
+            from factory.workspace import MAX_ARTIFACT
+            member.size = MAX_ARTIFACT + 1
             archive.addfile(member, io.BytesIO(b"x" * member.size))
         else:
             archive.addfile(member)
@@ -52,12 +55,20 @@ def test_reject_malicious_tar(tmp_path, kind):
         extract(output.getvalue(), tmp_path)
 
 
-def test_packaging_rejects_symlinks(tmp_path):
+def test_packaging_accepts_internal_symlinks_but_rejects_escaping_ones(tmp_path):
+    """A build legitimately links inside its tree; it must never link outside it."""
     root = tmp_path / "app"
-    root.mkdir()
-    (root / "link").symlink_to("/etc/passwd")
-    with pytest.raises(ValueError):
-        package(root, tmp_path / "artifact.tar.gz")
+    (root / "shared").mkdir(parents=True)
+    (root / "shared" / "lib.js").write_text("module.exports = 1;\n")
+    (root / "link").symlink_to("shared/lib.js")
+    record = package(root, tmp_path / "artifact.tar.gz")
+    assert record["files"] == 2
+
+    escape = tmp_path / "escape"
+    escape.mkdir()
+    (escape / "leak").symlink_to("/etc/passwd")
+    with pytest.raises(ValueError, match="must be relative"):
+        package(escape, tmp_path / "escape.tar.gz")
 
 
 def test_subprocess_timeout_output_limit_and_cancel():

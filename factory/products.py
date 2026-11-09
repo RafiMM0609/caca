@@ -283,3 +283,19 @@ def export_tree_worktree(worktree: Path, destination: Path) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
     return destination
+
+
+def init_artifact_repo(root: Path, message: str) -> str:
+    """Create a single-commit repository inside a published artifact and return the commit.
+
+    Deliberately not a copy of the product repository's `.git`: a hand-off should not carry
+    the operator's branches, stale worktree pointers, abandoned experiments or any remote
+    configuration. `_run()` already pins a factory identity, disables hooks and gpg signing,
+    and blanks the operator's git environment, so the commit is attributable and inert.
+    """
+    if not root.is_dir():
+        raise GitError("Artifact directory does not exist")
+    _run(["init", "-q", "-b", "main"], cwd=root)
+    _run(["add", "-A"], cwd=root)
+    _run(["commit", "-q", "-m", message], cwd=root)
+    return head_commit(root)

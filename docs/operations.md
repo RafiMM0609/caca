@@ -29,12 +29,41 @@ Profiles are administrator-controlled.
 
 **Native (default for the Nuxt profile).** `commands` is an ordered list of argv arrays run in a disposable copy of the product source, with a shared wall-clock deadline and bounded output. `checks_dir` plus `checks_argv` add operator-owned checks that run after the build; `{checks}` in an argument expands to the resolved checks directory. A relative `checks_dir` (the shipped default is `"checks"`) is resolved against the checkout that contains the `factory` package, never against the working directory of whichever process started the API or a scheduler — do not make it CWD-dependent, because that silently runs no operator checks while still looking validated. `checks_dir` without `checks_argv` is rejected at startup: a directory with no checks runs nothing while
 looking validated, which is exactly how the native profile once shipped with no operator checks at all.
-`artifact_dir` names the directory exported as the artifact. `serve_argv`, `readiness_path` and `qa_timeout`
+`artifact_dir` names the directory the **build sanity check** looks for: it must exist and be
+non-empty, which proves the configured commands actually produced output. It is *not* what gets
+published. `serve_argv`, `readiness_path` and `qa_timeout`
 drive the tester run. Native execution requires `FACTORY_ALLOW_NATIVE=1` and is **not** a sandbox.
 
 Keep the checkout path free of spaces. Nuxt Content percent-encodes a space into `%20` and then cannot resolve its own path, so a build in `.../Default Project/...` succeeds while the rendered page and browser acceptance cases fail. This is not a space-escaping bug in the factory's argv handling; the argv arrays are already passed as arrays.
 
 **Persistence and `env`.** A native profile may declare `env`, a map of uppercase names to values, which reaches the build, the operator checks and the served application. Two placeholders expand: `{data}` is the product's durable data directory and `{app}` is the build tree. The shipped default is `{"DATABASE_URL": "file:{data}/app.db", "DATA_DIR": "{data}"}`. Validation rejects unknown placeholders, lowercase names, and every `FACTORY_*` name or provider credential — the generated application is the least trusted process in the factory and must never receive a factory token or an API key. Secrets belong in the operator's environment, not in a profile.
+
+**What the artifact is.** The published artifact is the product's **codebase**, not its build
+output: every source file, a generated `README.md`, and a fresh single-commit git history
+created by `git init` inside the artifact directory. Build output (`node_modules/`, `release/`,
+`.nuxt/`) is excluded, because `npm ci && npm run build` regenerates it from the locked
+manifest, it is machine-specific, and shipping it produced a 929-file, 11 MB tarball for a
+nine-file application.
+
+Why a fresh `git init` rather than a copy of the product's `.git`: a hand-off should not carry
+the operator's branches, stale worktree pointers, abandoned experiments or any remote
+configuration. The commit is made with the factory identity, hooks disabled and gpg signing
+off, and it cannot contain a credential because `.git/config` is written by `git init` itself.
+
+The README is rendered from the approved plan and the profile, not written by a model. It
+documents the exact build commands, the run command, the environment variables the app expects
+and what the project was asked to do. A README that invents an install step is worse than none,
+and every value it contains is something the factory already knows.
+
+`factory run <project>` is build-on-demand: it extracts the artifact into
+`$FACTORY_DATA/runs/<project-id>/`, runs the profile's `commands` there, then serves the result
+against the durable data directory. The artifact itself is never mutated.
+
+Symlinks are permitted in an artifact because a production build legitimately emits them
+(Nitro links its server bundle's dependencies into a shared `.nitro/` directory). They are
+stored as links in the tarball rather than dereferenced, so a shared bundle is not duplicated.
+A link whose target is absolute or resolves outside the artifact is rejected at packaging time
+and again at extraction, so an artifact can never point at `/etc/passwd` or an operator's home.
 
 Two data directories exist and they are not interchangeable. **Verification** gets a throwaway directory inside its disposable build tree, so a case that creates a record and then lists records sees the same result every run instead of inheriting rows from the previous build. **`factory run <project>`** serves the published artifact against `data/product-data/<id>`, which sits **outside** the product's git working tree: a SQLite file inside the repository could be committed by `git add -A`, would be clobbered by the next checkout, and would ship in the artifact. A generated application may also legitimately own a `data/` directory of its own, so an inside-the-repo path would collide with real source. `app_data_dir()` in `factory/local_app.py` is the single definition; do not recompute the path elsewhere. `serve_argv` resolves against the artifact root, which already corresponds to `artifact_dir`, so a leading `release/` on the entry point is stripped rather than doubled.
 

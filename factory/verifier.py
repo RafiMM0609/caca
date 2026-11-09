@@ -201,6 +201,16 @@ class NativeVerifier:
             built = work / profile.artifact_dir
             if not built.is_dir() or built.is_symlink():
                 raise ValueError("Missing artifact directory")
-            list(files_under(built, limit=20_000_000))
-            shutil.copytree(built, output)
+            # `artifact_dir` is now only a **build sanity check**: it proves the configured
+            # build commands produced output. The published artifact is the product's source
+            # tree (see `factory/artifact.py`), not this directory, so the listing is not
+            # shipped. Symlinks are allowed here because a real build emits them (Nitro
+            # links its server bundle's dependencies) and rejecting them failed a correct
+            # application whose build and acceptance tests had both already passed.
+            shipped = list(files_under(built, allow_symlinks=True))
+            logs.append(f"BUILD OUTPUT: {len(shipped)} files in {profile.artifact_dir}/ "
+                        f"(not published; the artifact is the source tree)")
+            if output is not None:
+                output.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(built, output, symlinks=True, dirs_exist_ok=True)
         return "\n".join(logs)[-100000:]

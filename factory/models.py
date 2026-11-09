@@ -111,11 +111,24 @@ def _is_real_env_file(part: str) -> bool:
     return not part.endswith(ENV_TEMPLATE_SUFFIXES)
 
 
-def safe_path(name: str) -> str:
+# Paths a generated application must never contain. `.git` is here because a *source* tree
+# is authored by a worker: a `.git` there could carry hooks, a config with credentials, or
+# objects that confuse the product repository.
+#
+# A published *artifact* is different. It is built from tracked files by this factory and
+# its `.git` is created fresh by `git init` inside the artifact directory, so it holds only
+# history the factory just wrote. `safe_path(..., allow_git=True)` covers exactly that
+# packaging path and nothing else.
+BLOCKED_PATH_PARTS = ("..", ".git", ".pi", ".memorix", ".ssh")
+
+
+def safe_path(name: str, allow_git: bool = False) -> str:
     path = PurePosixPath(name)
+    blocked = BLOCKED_PATH_PARTS if not allow_git else tuple(
+        part for part in BLOCKED_PATH_PARTS if part != ".git")
     if (not name or name == "." or len(name) > 240 or path.is_absolute() or "\\" in name
             or any(ord(c) < 32 for c in name) or str(path) != name
-            or any(p in ("..", ".git", ".pi", ".memorix", ".ssh") for p in path.parts)
+            or any(p in blocked for p in path.parts)
             or any(_is_real_env_file(p) for p in path.parts)):
         raise ValueError(f"Disallowed file path: {name!r}")
     return name

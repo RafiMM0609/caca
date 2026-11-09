@@ -54,44 +54,47 @@ def main():
     elif args.command == "scheduler":
         Engine(settings).serve(args.lane)
     elif args.command == "run":
-        # Keep the published artifact immutable: serve a copy, so the data directory is the
-        # only thing that changes between runs.
-        from .local_app import expand_env, local_env
+        # The artifact is the product's codebase, not a build output, so serving it means
+        # building it first. Extract into a throwaway directory, run the profile's build
+        # commands there, then serve. The data directory is the only path that survives, so
+        # repeated runs see the same records and a rebuild cannot mutate the artifact.
+        from .local_app import app_data_dir, expand_env, local_env
+        from .workspace import extract
         store = Store(settings.data / "factory.sqlite3")
         project = store.project(args.project)
         artifact = json.loads(project["artifact"] or "null")
         if project["state"] != "ready" or not artifact:
             raise SystemExit("Project has no verified artifact to run")
-        # The artifact root already corresponds to `artifact_dir` (release/), so `serve_argv`
-        # paths are relative to it. Joining them against the job directory looked for
-        # release/release/server/index.mjs and failed to start.
-        source = settings.data / "jobs" / artifact["job_id"] / "output"
-        if not source.is_dir():
+        tarball = settings.data / "jobs" / artifact["job_id"] / "artifact.tar.gz"
+        if not tarball.is_file():
             raise SystemExit("The published artifact for this revision is missing")
         profile = settings.profiles[project["profile"]]
-        argv = [a.replace("{port}", str(args.port)) for a in profile.serve_argv]
-        # The verifier runs serve_argv with the project root as cwd, where `release/` exists.
-        # The published artifact IS `release/`, so an argv path that starts with artifact_dir
-        # must lose that prefix or node is asked for release/release/server/index.mjs.
-        prefix = profile.artifact_dir.strip("/") + "/"
-        if argv and argv[-1].startswith(prefix):
-            argv[-1] = argv[-1][len(prefix):]
-        entry = source / argv[-1] if argv else None
-        if not argv or not entry.is_file():
-            raise SystemExit(
-                "serve_argv does not resolve inside the published artifact (looked for {})".format(
-                    entry if argv else "<empty>"))
-        # One definition of the data location, shared with the verifier: duplicating the
-        # path here is how the two drifted apart before.
-        from .local_app import app_data_dir
+        work = settings.data / "runs" / project["id"]
+        if work.exists():
+            import shutil as _shutil
+            _shutil.rmtree(work)
+        work.mkdir(parents=True)
+        extract(tarball.read_bytes(), work)
         data_dir = app_data_dir(settings, project["id"])
         env = local_env()
-        env.update(expand_env(profile.env, data_dir=data_dir, app_dir=source))
+        env.update({"CI": "true", "npm_config_cache": os.environ.get(
+            "FACTORY_NPM_CACHE", str(work / ".npm-cache"))})
+        env.update(expand_env(profile.env, data_dir=data_dir, app_dir=work))
+        for command in profile.commands:
+            print(f"build: {' '.join(command)}", flush=True)
+            subprocess.run(command, cwd=work, env=env, check=True)
+        argv = [a.replace("{port}", str(args.port)) for a in profile.serve_argv]
         env.update({"PORT": str(args.port), "NITRO_PORT": str(args.port), "HOST": "127.0.0.1",
                     "NITRO_HOST": "127.0.0.1", "NUXT_TELEMETRY_DISABLED": "1"})
+        entry = work / argv[-1] if argv else None
+        if not argv or not entry.is_file():
+            raise SystemExit(
+                "serve_argv does not resolve inside the built artifact (looked for {})".format(
+                    entry if argv else "<empty>"))
         print(json.dumps({"project": project["name"], "url": f"http://127.0.0.1:{args.port}",
-                          "data": str(data_dir), "env": sorted(profile.env)}, indent=2), flush=True)
-        os.chdir(source)
+                          "workspace": str(work), "data": str(data_dir),
+                          "env": sorted(profile.env)}, indent=2), flush=True)
+        os.chdir(work)
         os.execvpe(argv[0], argv, env)
     elif args.command == "backup":
         destination = Path(args.destination)
