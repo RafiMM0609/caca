@@ -5,11 +5,16 @@ import pytest
 
 from factory.db import Conflict
 from factory.engine import Engine
-from factory.models import Change, Review
+from factory.models import Review
 
 
 class ScriptedAgent:
-    """Deterministic test double, NEVER a production provider or reported as an AI test."""
+    """Deterministic test double, NEVER a production provider or reported as an AI test.
+
+    ``generate`` backs the planner (and the reviewer); implementation goes through
+    ``ScriptedWorker`` because a worker edits its own worktree instead of returning
+    whole-file JSON.
+    """
     def __init__(self, plan, reject=0):
         self.plan, self.reject = plan, reject
         self.calls = []
@@ -18,8 +23,6 @@ class ScriptedAgent:
         self.calls.append(role)
         if role == "planner":
             return self.plan
-        if role == "implementer":
-            return Change(summary="Create portfolio", files={"index.html": "<!doctype html><html lang='en'><head><title>Portfolio</title></head><body><h1>Ada</h1><p>ada@example.test</p></body></html>"})
         if self.reject:
             self.reject -= 1
             return Review(approved=False, findings=["Fix accessibility"])

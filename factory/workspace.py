@@ -6,7 +6,7 @@ import shutil
 import tarfile
 from pathlib import Path
 
-from .models import Change, safe_path
+from .models import safe_path
 
 MAX_ARTIFACT = 100_000_000
 
@@ -40,22 +40,6 @@ def snapshot(root: Path):
     if sum(len(value.encode()) for value in result.values()) > 300_000:
         raise ValueError("Text context exceeds 300 KB (excluding lockfiles)")
     return result
-
-
-def apply(root: Path, change: Change):
-    # The tree is created by this controller and is never mounted writable into a verifier.
-    list(files_under(root))
-    for name in change.delete:
-        path = root / name
-        if path.exists():
-            if not path.is_file():
-                raise ValueError("Deletion must name a regular file")
-            path.unlink()
-    for name, content in change.files.items():
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-    snapshot(root)  # Reject oversized/nontext trees before committing the task.
 
 
 def digest_file(path):

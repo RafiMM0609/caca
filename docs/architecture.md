@@ -30,7 +30,7 @@ Product repositories run with `GIT_CONFIG_NOSYSTEM`, hooks disabled, gpg signing
 
 `PiWorker` (`factory/agents.py`) is the coding harness used for plan tasks. Tools stay enabled; it reads, runs and edits inside its worktree. It runs with `--no-session` and with extensions, skills, MCP, prompt templates, themes and context-file discovery disabled, so it cannot pull configuration from the operator's environment or the product repository.
 
-`PiAgent` remains a **tool-free structured JSON client** for planning, test preparation and review. It returns a validated object the controller applies. Using it for implementation was removed deliberately: the runtime injects a coding-agent preamble, so a tool-free model emits markup that looks like a tool call and the stage failed with no usable output.
+`PiAgent` remains a **tool-free structured JSON client** for planning, test preparation and review. It returns a validated Pydantic object that the controller consumes as data — it does not write files. The plan becomes scheduling input (`ready_set`), the test suite becomes a runner input, and the review verdict becomes an accept/reject decision. Using it for implementation was removed deliberately: the runtime injects a coding-agent preamble, so a tool-free model emits markup that looks like a tool call and the stage failed with no usable output. Note the naming: `PiAgent` is not an agent in the tool-using sense, only a generation client; `PiWorker` is the harness.
 
 Review can use `FACTORY_REVIEW_MODEL`; otherwise it uses the configured model. Approval does not prove correctness — configured verification checks and human acceptance remain necessary.
 

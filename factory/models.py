@@ -121,24 +121,6 @@ def safe_path(name: str) -> str:
     return name
 
 
-class Change(StrictModel):
-    summary: str = Field(min_length=3, max_length=4000)
-    files: dict[str, str] = Field(max_length=100)
-    delete: list[str] = Field(default_factory=list, max_length=100)
-
-    @model_validator(mode="after")
-    def valid_files(self):
-        if not self.files and not self.delete:
-            raise ValueError("Empty change")
-        for name in [*self.files, *self.delete]:
-            safe_path(name)
-        if set(self.files) & set(self.delete):
-            raise ValueError("Cannot write and delete the same file")
-        if sum(len(v.encode()) for v in self.files.values()) > 2_000_000:
-            raise ValueError("Change exceeds 2 MB")
-        return self
-
-
 class Review(StrictModel):
     approved: bool
     findings: list[str] = Field(max_length=100)

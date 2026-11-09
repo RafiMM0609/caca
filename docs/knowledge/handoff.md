@@ -55,7 +55,12 @@ Checkpoint: 2026-11-08, after commit `5eb3318`. Read [origin and decisions](orig
 - The starter lockfile was validated by clean `npm ci`. npm-generated extraneous platform entries caused an earlier failure and were removed; do not blindly reintroduce them.
 - Studio's launcher is in a custom element/shadow DOM. Browser automation must wait for it and scroll the iframe into view. Avoid the page's last generic button: it can hit the demo contact form before Studio hydrates.
 - Nuxt Studio/API processes are local-only. A remote dashboard viewer's localhost is a different machine; remote preview is not implemented.
-- `workspace.apply()` and the `Change` model are **dead code**: the engine no longer applies whole-file JSON, because workers are harness processes that edit their own worktree. Verified 2026-11-09 — `apply()` has no caller in `factory/` or `tests/`, and `Change` is referenced only by `tests/test_workflow.py` as part of a scripted-double fixture. They were deliberately kept rather than removed. Do not describe them as part of the security suite; `tests/test_security.py` does not import either.
+- `workspace.apply()` and the `Change` model were **removed on 2026-11-09**. They existed so the controller
+  could write whole-file JSON returned by an implementer, which stopped being how implementation works
+  once workers became Pi harness processes that edit their own worktree. The code had no caller in
+  `factory/` or `tests/` but read as an active path-safety boundary, so it was deleted rather than kept:
+  a dead guard is worse than no guard, because the next reader assumes the check runs. `safe_path()`
+  survives and **is** live — `files_under()` calls it while walking source and artifacts.
 
 ## Last executed evidence
 
