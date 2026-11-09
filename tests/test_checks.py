@@ -314,3 +314,26 @@ def test_js_syntax_does_not_pass_silently_without_node(tmp_path, monkeypatch):
                        env={"PATH": str(tmp_path / "empty-bin")})
     assert result.returncode != 0
     assert "node is not on PATH" in result.stderr
+
+
+@pytest.mark.parametrize("given,expected", [
+    ({"shopName": "#shop"}, ["shop_name"]),
+    ({"heroName": "#hero", "menu_card": "#menu"}, ["hero_name", "menu_card"]),
+])
+def test_camel_case_selector_labels_are_normalised(given, expected):
+    """A correct plan must not die on a naming convention the planner was never told."""
+    from factory.models import AcceptanceFlow
+
+    flow = AcceptanceFlow.model_validate({
+        "id": "home", "kind": "browser", "goal": "A visitor sees the shop name.",
+        "steps": ["Visit /"], "selectors": given})
+    assert list(flow.selectors) == expected
+
+
+def test_an_unnormalisable_selector_label_is_still_rejected():
+    from factory.models import AcceptanceFlow
+
+    with pytest.raises(ValueError, match="selector name"):
+        AcceptanceFlow.model_validate({
+            "id": "home", "kind": "browser", "goal": "A visitor sees the shop name.",
+            "steps": ["Visit /"], "selectors": {"1bad": "#x"}})

@@ -41,10 +41,11 @@ PLANNER_PROMPT = (
     "For tester-enabled profiles include test_flows with explicit API routes/status/JSON "
     "and browser routes/selectors/actions/expected outcomes. These are the independent tester contract. "
     "Every browser flow MUST list the selectors it depends on in its `selectors` map "
-    "(name -> CSS selector), and the task instructions must use exactly those same "
-    "selectors. Declare every state explicitly, including fields shown while a row is "
-    "being edited: the worker builds what the instructions name and the tester asserts "
-    "only the declared selectors, so an undeclared selector makes a correct page fail."
+    "(label -> CSS selector). Selector labels are snake_case, matching [a-z][a-z0-9_-]*; "
+    "`shopName` is invalid, `shop_name` is correct. The task instructions must use exactly "
+    "those same selectors. Declare every state explicitly, including fields shown while a "
+    "row is being edited: the worker builds what the instructions name and the tester "
+    "asserts only the declared selectors, so an undeclared selector makes a correct page fail."
 )
 
 

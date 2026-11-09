@@ -28,11 +28,28 @@ class AcceptanceFlow(StrictModel):
     # edit mode while the tester asserted `input-name`, so a correct page failed the gate.
     selectors: dict[str, str] = Field(default_factory=dict, max_length=60)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_selector_names(cls, data):
+        """Accept `camelCase` selector names by rewriting them to `snake_case`.
+
+        The key of a `selectors` entry is a label, not a CSS construct, so the style a model
+        reaches for is arbitrary and both spellings are unambiguous. Rejecting `shopName`
+        outright failed live planner jobs twice in a row: the model produced a correct plan
+        and the whole job died on a naming convention nothing had told it about. Normalising
+        is cheaper and safer than spending a repair attempt on a spelling.
+        """
+        if isinstance(data, dict) and isinstance(data.get("selectors"), dict):
+            data = {**data, "selectors": {
+                re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower(): value
+                for name, value in data["selectors"].items()}}
+        return data
+
     @model_validator(mode="after")
     def validate_selectors(self):
         for name, selector in self.selectors.items():
             if not re.fullmatch(r"[a-z][a-z0-9_-]{0,47}", name):
-                raise ValueError(f"Invalid selector name: {name!r}")
+                raise ValueError(f"Invalid selector name: {name!r} (use lowercase snake_case)")
             if not selector or len(selector) > 300:
                 raise ValueError(f"Invalid selector for {name}")
             if any(ord(c) < 32 for c in selector) or "url(" in selector.lower():
