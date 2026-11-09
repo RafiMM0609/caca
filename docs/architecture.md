@@ -66,6 +66,12 @@ A reviewer's `findings` are carried into the next attempt's prompt as `PREVIOUS 
 
 If a task is approved on a later attempt after an earlier rejection, the verdict stands but a `review.flaky_approval` event records the disagreement together with the earlier findings, and `worker.detail.flaky_approval` is set. That is a warning rather than a block because the worker may genuinely have fixed the issue; the operator should confirm rather than discover it in two review files.
 
+## Restart and resume
+
+A retry after a scheduler restart creates a **new job id**, so a job cannot answer "which tasks are already done" by looking at itself. `Store.tasks_merged_for_project` requires two independent facts: a worker row recorded as merged **for this plan revision**, and that commit **still reachable from the product branch** (`products.ancestors`). A row alone is unsafe — a `git reset` or a failed conflict resolution leaves it behind — and a commit alone cannot say which task produced it. A `build.resumed` event records what was skipped.
+
+`FACTORY_JOB_TIMEOUT` bounds the whole job (default two hours), separate from `FACTORY_AGENT_TIMEOUT` which bounds one model invocation. A build is several worker waves plus a build, acceptance tests and a possible repair loop, so a single number cannot serve both; the deadline travels through the same cancellation path as an operator cancel.
+
 ## When a gate fails
 
 `Engine._verify_with_repair` wraps verification in a bounded loop. A failed run writes `repair-<n>-evidence.json` from the tester's own report — the failing case, the assertion message, the selector and the screenshot — and hands it to one Pi harness worker on the product branch, because the defect is in the merged code rather than in a single task's worktree. The brief forbids editing the test suite or the operator checks: the point is to fix the application, not to weaken the gate.

@@ -142,13 +142,28 @@ built and served correctly outside the factory.
    instead of burning the remaining attempts on identical evidence, and exhaustion fails the
    job with no artifact.
 
-### Phase 2 — Durability (P2)
+### Phase 2 — Durability (P2) — **DONE 2026-11-09**
 
 8. Wire `completed_tasks()` / `worker_states()` into `build_tasks()` so a restart resumes at a
-   wave boundary instead of redoing merged work.
-9. Add a **job-level** deadline, distinct from the per-worker `agent_timeout`.
+   wave boundary instead of redoing merged work. **Done, differently than planned.** The
+   existing helpers were the wrong shape: they key on `job_id`, and a retry creates a new
+   job, so they always answered "none". `Store.tasks_merged_for_project` instead requires two
+   facts — a worker row recorded as merged **for this plan revision**, and that commit **still
+   reachable on the branch** (`products.ancestors(root)`). A row alone is unsafe after a
+   reset or rebase; a commit alone cannot say which task it belonged to. A `build.resumed`
+   event records what was skipped.
+9. Add a **job-level** deadline, distinct from the per-worker `agent_timeout`. **Done:**
+   `FACTORY_JOB_TIMEOUT`, default 7200s, enforced through the same cancellation path as an
+   operator cancel.
 10. **Done when:** a build killed mid-wave resumes after a scheduler restart without re-running
-    tasks that already merged.
+    tasks that already merged. **Done:** `tests/test_resume.py` covers a second job resuming,
+    a discarded commit being redone, a removed task not counting, and a new plan revision
+    rebuilding instead of resuming. The resume path is confirmed to fail when the seeding is
+    removed.
+
+**Note on the plan's own assumption.** `completed_tasks()` and `worker_states()` remain in
+`db.py`, unused by the engine: they answer a per-job question that no caller needs. They are
+kept because tests use them to inspect outcomes, not because they are the resume path.
 
 ### Phase 3 — Contract correctness (P3)
 

@@ -50,7 +50,8 @@ class Store:
                   job_id TEXT NOT NULL, task_id TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued',
                   branch TEXT NOT NULL, worktree TEXT, base_commit TEXT, commit_sha TEXT,
                   depends_on TEXT NOT NULL DEFAULT '[]', attempts INTEGER NOT NULL DEFAULT 0,
-                  detail TEXT NOT NULL DEFAULT '{}', created REAL NOT NULL, started REAL, finished REAL);
+                  detail TEXT NOT NULL DEFAULT '{}', created REAL NOT NULL, started REAL, finished REAL,
+                  revision INTEGER NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS workers_by_job ON workers(job_id, task_id);
             """)
             db.execute("BEGIN IMMEDIATE")
@@ -58,6 +59,12 @@ class Store:
                 columns = {row[1] for row in db.execute("PRAGMA table_info(projects)")}
                 if "pending_edit" not in columns:
                     db.execute("ALTER TABLE projects ADD COLUMN pending_edit TEXT")
+                # Resume is only valid within the plan revision that produced the work: after
+                # an edit the same task id means different code, so a merged row from an older
+                # revision must not be treated as done.
+                worker_columns = {row[1] for row in db.execute("PRAGMA table_info(workers)")}
+                if "revision" not in worker_columns:
+                    db.execute("ALTER TABLE workers ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
                 db.commit()
             except BaseException:
                 db.rollback()
@@ -228,13 +235,14 @@ class Store:
     # A worker is one Pi harness invocation for one plan task in its own worktree.
     # These rows are what makes "the planner assigned work to workers" observable.
 
-    def create_worker(self, project, job, task_id, branch, base_commit, depends_on=(), worktree=None):
+    def create_worker(self, project, job, task_id, branch, base_commit, depends_on=(),
+                      worktree=None, revision=0):
         worker_id = uid()
         with self.tx() as db:
             db.execute("INSERT INTO workers(id,project_id,job_id,task_id,branch,worktree,base_commit,"
-                       "depends_on,created) VALUES(?,?,?,?,?,?,?,?,?)",
+                       "depends_on,created,revision) VALUES(?,?,?,?,?,?,?,?,?,?)",
                        (worker_id, project, job, task_id, branch, str(worktree) if worktree else None,
-                        base_commit, json.dumps(list(depends_on)), time.time()))
+                        base_commit, json.dumps(list(depends_on)), time.time(), revision))
             self.event_tx(db, project, job, "worker.created",
                           {"worker": worker_id, "task": task_id, "branch": branch})
         return self.one("SELECT * FROM workers WHERE id=?", (worker_id,))
@@ -274,6 +282,34 @@ class Store:
     def completed_tasks(self, job):
         rows = self.all("SELECT task_id FROM workers WHERE job_id=? AND state='merged'", (job,))
         return {row["task_id"] for row in rows}
+
+    def tasks_merged_for_project(self, project, revision, present_commits):
+        """Tasks whose merged commit is still reachable on the product branch.
+
+        A retry creates a **new** job id, so `completed_tasks(job_id)` finds nothing after a
+        restart: the work is real, it is just filed under the previous job. Worse, believing
+        an old row is enough would be unsafe — the branch may have been reset or the commit
+        may never have landed. So both facts are required: a worker row recorded as merged for
+        this plan revision, *and* that commit still reachable in the repository now.
+
+        ``present_commits`` is the set of commits on the current branch; the caller reads it
+        from git so this method never guesses about repository state.
+        """
+        # Deliberately no join on `jobs`: the worker row already carries the project, and
+        # requiring a live job row would make resume depend on job history surviving rather
+        # than on the work itself. `commit_sha` is the fact that matters, and it is checked
+        # against the branch below.
+        rows = self.all(
+            "SELECT task_id, commit_sha FROM workers "
+            "WHERE project_id=? AND revision=? AND state='merged' AND commit_sha IS NOT NULL "
+            "ORDER BY finished",
+            (project, revision))
+        reachable = set(present_commits)
+        done = set()
+        for row in rows:
+            if row["commit_sha"] in reachable:
+                done.add(row["task_id"])
+        return done
 
     def backup(self, destination):
         with self.connect() as source, sqlite3.connect(destination) as dest:

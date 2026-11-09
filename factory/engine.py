@@ -85,8 +85,19 @@ class Engine:
         project = store.project(project_id)
         done = threading.Event()
 
+        deadline = time.monotonic() + settings.job_timeout
+
+        def expired():
+            return time.monotonic() > deadline
+
         def cancelled():
-            return self.stop.is_set() or bool(store.one("SELECT cancel FROM jobs WHERE id=?", (job_id,))["cancel"])
+            # A job-level deadline as well as a cancel flag. `agent_timeout` bounds one model
+            # call; a build is several waves plus a build, acceptance tests and a possible
+            # repair loop, so a wedged job needed its own ceiling rather than an unbounded
+            # wait behind a heartbeat that keeps looking healthy.
+            return (self.stop.is_set()
+                    or expired()
+                    or bool(store.one("SELECT cancel FROM jobs WHERE id=?", (job_id,))["cancel"]))
 
         def heartbeat():
             while not done.wait(2):

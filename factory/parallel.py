@@ -70,7 +70,16 @@ class ParallelBuilder:
         root = products.ensure_repo(self.settings.data, project["id"])
         products.checkout_target(root)
         outcomes: list[WorkerOutcome] = []
-        completed: set[str] = set()
+        # Resume from work that is genuinely on the branch. A retry after a restart gets a
+        # new job id, so asking this job for its completed tasks always answered "none" and
+        # every merged task was redone -- a 15-minute build restarted from zero. The evidence
+        # must satisfy both conditions: a worker row recorded as merged for this plan
+        # revision, *and* its commit still reachable from the branch, because a reset or a
+        # rebase can invalidate the row.
+        completed: set[str] = store.tasks_merged_for_project(
+            project["id"], project["revision"], products.ancestors(root))
+        plan_ids = {task.id for task in plan.tasks}
+        completed &= plan_ids
         attempts: dict[str, int] = {}
         # What the reviewer said when it rejected a task, carried into the next attempt.
         # Without this the retry runs with a prompt identical to the one that just failed:
@@ -78,6 +87,11 @@ class ParallelBuilder:
         # Observed live: a task was rejected twice for an unrequested dependency, the worker
         # was never told, and the third review approved the unchanged problem.
         findings: dict[str, list[str]] = {}
+
+        if completed:
+            store.event(project["id"], job["id"], "build.resumed",
+                        {"completed": sorted(completed),
+                         "remaining": sorted(plan_ids - completed)})
 
         while True:
             if cancelled():
@@ -157,7 +171,8 @@ class ParallelBuilder:
         record = self.record_for(job["id"], task.id)
         if record is None:
             record = store.create_worker(project["id"], job["id"], task.id, branch, base,
-                                         depends_on=task.depends_on)
+                                         depends_on=task.depends_on,
+                                         revision=project["revision"])
         worker_id = record["id"]
 
         # A retry starts from a clean branch so a failed attempt cannot poison the next one.

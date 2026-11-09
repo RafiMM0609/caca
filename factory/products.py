@@ -299,3 +299,14 @@ def init_artifact_repo(root: Path, message: str) -> str:
     _run(["add", "-A"], cwd=root)
     _run(["commit", "-q", "-m", message], cwd=root)
     return head_commit(root)
+
+
+def ancestors(root: Path, limit=500) -> set[str]:
+    """Commits reachable from the target branch, for judging whether merged work survived.
+
+    Resume needs a fact about the repository, not about the database: a worker row saying
+    "merged" is only true while its commit is still on the branch. A reset, a rebase or a
+    failed conflict resolution can leave the row behind.
+    """
+    out = _run(["rev-list", f"--max-count={limit}", "HEAD"], cwd=root, timeout=60)
+    return {line.strip() for line in out.splitlines() if line.strip()}

@@ -18,6 +18,11 @@ class Settings:
     max_cost: float = 2.0
     max_job_cost: float = 20.0
     agent_timeout: int = 600
+    # Wall-clock ceiling for one job. `agent_timeout` bounds a single model invocation; a
+    # build is four workers in waves plus a build, acceptance tests and a repair loop, so the
+    # two cannot share a number. 15 minutes was a measured Phase 0 build; two hours leaves
+    # room for a repair pass without letting a wedged job run forever.
+    job_timeout: int = 7200
     max_repairs: int = 2
     memorix: str = ""
     # How many Pi harness workers may run at once. Each is a separate process tree.
@@ -41,6 +46,7 @@ class Settings:
             max_cost=float(os.environ.get("FACTORY_MAX_COST", "2")),
             max_job_cost=float(os.environ.get("FACTORY_MAX_JOB_COST", "20")),
             agent_timeout=int(os.environ.get("FACTORY_AGENT_TIMEOUT", "600")),
+            job_timeout=int(os.environ.get("FACTORY_JOB_TIMEOUT", "7200")),
             memorix=os.environ.get("FACTORY_MEMORIX", ""),
             worker_concurrency=int(os.environ.get("FACTORY_WORKER_CONCURRENCY", "3")),
             profiles={k: Profile.model_validate(v) for k, v in raw.get("profiles", {}).items()},
@@ -54,6 +60,8 @@ class Settings:
             raise ValueError("Operator and release tokens must be distinct")
         if not 0 < self.max_cost <= 100 or not 10 <= self.agent_timeout <= 7200:
             raise ValueError("Invalid agent cost/time budget")
+        if not 60 <= self.job_timeout <= 86400:
+            raise ValueError("Job timeout must be between 60s and 24h")
         if not 1 <= self.worker_concurrency <= 16:
             raise ValueError("Worker concurrency must be between 1 and 16")
         if not self.max_cost <= self.max_job_cost <= 1000:
