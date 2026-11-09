@@ -251,3 +251,31 @@ def test_planner_gives_up_after_the_bounded_retries(settings, store, project, pl
     Engine(settings, store, agent, TestVerifier()).process(store.claim())
     assert agent.calls == settings.max_repairs + 1, "retries are bounded, not infinite"
     assert store.one("SELECT state FROM jobs WHERE id=?", (job["id"],))["state"] == "failed"
+
+
+class FeedbackRecordingWorker:
+    """Writes a file into its worktree and records the full instruction it received."""
+
+    def __init__(self):
+        self.instructions = []
+
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        self.instructions.append(instruction)
+        (worktree / "index.html").write_text(
+            "<!doctype html><html lang='en'><head><title>Portfolio</title></head>"
+            "<body><h1>Ada</h1><p>ada@example.test</p></body></html>")
+        return "scripted harness worker"
+
+
+def test_engine_retry_prompt_carries_the_reviewer_findings(settings, store, project, plan):
+    """End to end through Engine: a rejected attempt must reach the worker's next prompt."""
+    build_job(store, project)
+    job = store.claim()
+    worker = FeedbackRecordingWorker()
+    Engine(settings, store, ScriptedAgent(plan, reject=1), TestVerifier(), worker=worker).process(job)
+
+    assert store.project(project["id"])["state"] == "ready"
+    assert len(worker.instructions) == 2, "one attempt was rejected, so a second must run"
+    assert "PREVIOUS ATTEMPT FEEDBACK" not in worker.instructions[0]
+    assert "PREVIOUS ATTEMPT FEEDBACK" in worker.instructions[1]
+    assert "Fix accessibility" in worker.instructions[1], "the reviewer's finding must be quoted"

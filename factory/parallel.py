@@ -72,6 +72,12 @@ class ParallelBuilder:
         outcomes: list[WorkerOutcome] = []
         completed: set[str] = set()
         attempts: dict[str, int] = {}
+        # What the reviewer said when it rejected a task, carried into the next attempt.
+        # Without this the retry runs with a prompt identical to the one that just failed:
+        # the worker repeats the same mistake and the reviewer re-reads the same diff.
+        # Observed live: a task was rejected twice for an unrequested dependency, the worker
+        # was never told, and the third review approved the unchanged problem.
+        findings: dict[str, list[str]] = {}
 
         while True:
             if cancelled():
@@ -81,7 +87,8 @@ class ParallelBuilder:
                 break
             store.event(project["id"], job["id"], "wave.start",
                         {"tasks": [task.id for task in ready], "completed": sorted(completed)})
-            wave = self._run_wave(project, job, root, ready, instructions_for, cancelled, review_for, attempts)
+            wave = self._run_wave(project, job, root, ready, instructions_for, cancelled,
+                                  review_for, attempts, findings)
             accepted = self._merge_wave(project, job, root, wave, cancelled)
             for outcome in wave:
                 if outcome.task_id in accepted:
@@ -96,8 +103,13 @@ class ParallelBuilder:
                                      + ", ".join(sorted(o.task_id for o in failed)))
                 for outcome in failed:
                     attempts[outcome.task_id] = attempts.get(outcome.task_id, 0) + 1
+                    reported = (outcome.detail or {}).get("review", {}).get("findings") or []
+                    if reported:
+                        findings[outcome.task_id] = list(reported)[:10]
                 store.event(project["id"], job["id"], "wave.retry",
-                            {"tasks": sorted(o.task_id for o in failed)})
+                            {"tasks": sorted(o.task_id for o in failed),
+                             "feedback": {o.task_id: findings.get(o.task_id, [])
+                                          for o in failed}})
 
             store.event(project["id"], job["id"], "wave.done",
                         {"merged": sorted(accepted), "completed": sorted(completed)})
@@ -109,14 +121,16 @@ class ParallelBuilder:
 
     # -- one wave ----------------------------------------------------------------------
 
-    def _run_wave(self, project, job, root, tasks, instructions_for, cancelled, review_for, attempts):
+    def _run_wave(self, project, job, root, tasks, instructions_for, cancelled, review_for,
+                  attempts, findings=None):
         concurrency = max(1, min(self.settings.worker_concurrency, len(tasks)))
         base = products.head_commit(root)
         results: dict[str, WorkerOutcome] = {}
 
         def run(task):
             return self._run_one(project, job, root, task, base, instructions_for, cancelled,
-                                 review_for, attempts.get(task.id, 0))
+                                 review_for, attempts.get(task.id, 0),
+                                 (findings or {}).get(task.id, []))
 
         with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="factory-worker") as pool:
             futures = {pool.submit(run, task): task for task in tasks}
@@ -136,7 +150,8 @@ class ParallelBuilder:
                                                      base=base, detail=detail)
         return [results[task.id] for task in tasks if task.id in results]
 
-    def _run_one(self, project, job, root, task, base, instructions_for, cancelled, review_for, prior_attempts):
+    def _run_one(self, project, job, root, task, base, instructions_for, cancelled, review_for,
+                 prior_attempts, prior_findings=None):
         store = self.store
         branch = self._branch(task.id)
         record = self.record_for(job["id"], task.id)
@@ -164,7 +179,8 @@ class ParallelBuilder:
         try:
             products.worktree_add(root, worktree, branch)
             instruction = instructions_for(task, {"brief": project["brief"], "base": base,
-                                                  "attempt": prior_attempts + 1})
+                                                  "attempt": prior_attempts + 1,
+                                                  "feedback": "\n".join(prior_findings or [])})
             transcript = self.worker.run_task(worktree, instruction, cancelled=cancelled)
             commit = products.commit_all(worktree, f"{task.title} ({task.id})")
             changed = products.changed_files(worktree, base)
@@ -179,6 +195,21 @@ class ParallelBuilder:
                     store.event(project["id"], job["id"], "worker.rejected",
                                 {"task": task.id, "findings": decision.get("findings", [])[:10]})
                     return WorkerOutcome(task.id, "rejected", branch, worktree, commit, base, detail)
+                if prior_findings and prior_attempts:
+                    # The same reviewer rejected this task on an earlier attempt and now
+                    # approves it. That is legitimate -- the worker may have fixed the
+                    # problem -- but it is also how a real "approve because it is the third
+                    # time" slipped through: a task rejected twice for an unrequested
+                    # dependency merged with that dependency still in package.json. The
+                    # verdict stands, and the disagreement is recorded so the operator can
+                    # see it without reading two review files side by side.
+                    detail["flaky_approval"] = True
+                    detail["prior_findings"] = list(prior_findings)[:10]
+                    store.event(project["id"], job["id"], "review.flaky_approval",
+                                {"task": task.id, "attempt": prior_attempts + 1,
+                                 "prior_findings": list(prior_findings)[:10],
+                                 "note": "approved after an earlier rejection; confirm the "
+                                         "findings were actually resolved"})
 
             store.set_worker(worker_id, state="awaiting_merge", commit_sha=commit, detail=detail)
             store.event(project["id"], job["id"], "worker.finished",

@@ -205,3 +205,69 @@ def test_cancellation_stops_between_waves(env):
     with pytest.raises(Cancelled):
         builder.build_tasks(project, {"id": "job-1", "payload": "{}"}, plan,
                             lambda task, ctx: "do it", lambda: True)
+
+
+class FeedbackWorker(FakeWorker):
+    """Records the feedback each attempt receives, so the retry prompt is observable."""
+
+    def __init__(self, fix_on_attempt=2):
+        super().__init__()
+        self.instructions = []
+        self.fix_on_attempt = fix_on_attempt
+
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False):
+        self.instructions.append(instruction)
+        return super().run_task(worktree, instruction, model, timeout, cancelled)
+
+
+def test_a_rejected_task_is_told_what_the_reviewer_said(env):
+    """A retry must receive the findings, not repeat a prompt identical to the failed one.
+
+    This is the defect that let a task rejected twice for an unrequested dependency merge on
+    its third attempt with the dependency still present: the worker was never told.
+    """
+    plan = Plan(summary="One task whose first attempt is rejected.", tasks=[task("solo")])
+    settings, store, project = env
+    worker = FeedbackWorker()
+
+    def review(task, worktree, diff, base):
+        # Reject the first attempt only.
+        if len(worker.instructions) < 2:
+            return {"approved": False,
+                    "findings": ["package.json adds better-sqlite3, an unrequested dependency"]}
+        return {"approved": True, "findings": []}
+
+    builder = ParallelBuilder(settings, store, worker=worker)
+    builder.build_tasks(project, {"id": "job-1", "payload": "{}"}, plan,
+                        lambda t, ctx: (f"YOUR TASK ({t.id}) do it"
+                                        + (f"\n\nPREVIOUS ATTEMPT FEEDBACK:\n{ctx['feedback']}"
+                                           if ctx.get("feedback") else "")),
+                        lambda: False, review)
+
+    assert len(worker.instructions) == 2
+    first, second = worker.instructions
+    assert "PREVIOUS ATTEMPT FEEDBACK" not in first, "the first attempt has nothing to be told"
+    assert "PREVIOUS ATTEMPT FEEDBACK" in second, "the retry must carry the reviewer's findings"
+    assert "better-sqlite3" in second
+
+
+def test_approval_after_a_rejection_is_recorded_as_a_disagreement(env):
+    """An approval that reverses an earlier rejection must be visible, not silently green."""
+    plan = Plan(summary="One task approved only on its second attempt.", tasks=[task("solo")])
+    settings, store, project = env
+    worker = FeedbackWorker()
+
+    def review(task, worktree, diff, base):
+        if len(worker.instructions) < 2:
+            return {"approved": False, "findings": ["the API route is missing"]}
+        return {"approved": True, "findings": []}
+
+    builder = ParallelBuilder(settings, store, worker=worker)
+    builder.build_tasks(project, {"id": "job-1", "payload": "{}"}, plan,
+                        lambda t, ctx: f"YOUR TASK ({t.id}) do it", lambda: False, review)
+
+    events = [e["kind"] for e in store.all("SELECT kind FROM events WHERE job_id='job-1'")]
+    assert "review.flaky_approval" in events
+    record = store.workers_for("job-1")[0]
+    assert record["state"] == "merged", "the verdict stands; this is a warning, not a block"
+    assert "flaky_approval" in (record["detail"] or "")
