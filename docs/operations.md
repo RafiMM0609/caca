@@ -74,6 +74,14 @@ The shipped checks are `checks/secret_scan.py` and `checks/js_syntax.py`.
 - **`secret_scan.py <artifact_dir>`** blocks credential-shaped strings and the exact values of
   configured secrets from appearing in the built artifact. It is a pattern and exact-value scan over
   text files up to 20 MB, not entropy analysis: an obfuscated or split credential will pass.
+- **`ui_lint.py <artifact_dir>`** rejects the mechanical subset of design defects: `transition: all`,
+  `ease-in` on a transition, a duration with no timing function, `outline: none` with no
+  `:focus-visible` replacement, `user-select: none` alongside body text, and `<html>` with no
+  `lang`. It reports `file:line: rule` and exits 1; an artifact with nothing to scan also exits 1,
+  because a gate that sees nothing must not report success. **It does not judge taste** — spacing,
+  hierarchy and colour are not regex-detectable, and a check that pretended otherwise would
+  produce false failures until operators learned to ignore it. The Perpustakaan Mini artifact,
+  whose generic look motivated the check, passes it outright.
 - **`js_syntax.py [--allow-empty] <artifact_dir>`** runs `node --check` on every `.js`/`.mjs`/`.cjs`
   file in the artifact. `node --check` parses without executing, so generated application code is
   never run by this check. It matters because a build can pass while shipping JavaScript that does

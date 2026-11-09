@@ -83,7 +83,7 @@ That is the whole argument for D1 in one comparison. It is also not proof of *ta
 baseline is what an unguided agent produces, and the skilled output is what a good agent
 produces. Both are correct code; only one looks deliberate.
 
-## Phase D3 — Review (medium)
+## Phase D3 — Review (medium) — **DONE 2026-11-09**
 
 8. A design section in the reviewer prompt, written as checks rather than taste: motion
    without a stated purpose, `ease-in` on an entrance, `transition: all`, focus outline removed
@@ -91,8 +91,14 @@ produces. Both are correct code; only one looks deliberate.
    Inline, because the reviewer has no tools.
 9. **Done when:** a deliberately sloppy UI is rejected with design findings, and a clean one is
    not.
+   **Done:** the reviewer prompt gained a design section written as defects, not preferences —
+   motion without purpose, `transition: all`, `ease-in` on an entrance, `outline: none` without
+   a `:focus-visible` replacement, colour as the only state signal, fixed widths that break at
+   360px, `user-select: none` on readable text. It ends with the counter-rule that stops it
+   becoming an opinion: *do not reject one merely because a layout differs from how you would
+   have drawn it*. Inline, because the reviewer has no tools and cannot read a skill file.
 
-## Phase D4 — Enforcement (medium, the part that lasts)
+## Phase D4 — Enforcement (medium, the part that lasts) — **DONE 2026-11-09**
 
 10. `checks/ui_lint.py`: static scan of the built artifact for the mechanical subset of the
     same rules — `transition: all`, `ease-in` on entrances, `outline: none` without
@@ -101,6 +107,20 @@ produces. Both are correct code; only one looks deliberate.
 11. Wire into the Studio profile's `checks_argv` next to `secret_scan`.
 12. **Done when:** an artifact with `transition: all` fails the build, and the message names
     the file and the rule.
+    **Done:** `checks/ui_lint.py`, six rules, wired into the Studio profile beside
+    `secret_scan`. It reports `file:line: rule` and exits 1 on any finding; an artifact with
+    nothing to scan also exits 1, because a gate that sees nothing must not report success.
+
+### What the gate found on the artifact that motivated all this
+
+Run against the Perpustakaan Mini artifact — the one whose design prompted this work — it
+reports **PASS**, with no mechanical findings. Its CSS has no `transition: all`, no `ease-in`,
+no removed focus ring.
+
+That is the honest limit of D4, and it was predicted: the complaint was *taste* — generic
+colours, weak hierarchy, an unstyled form — and none of those are regex-detectable. D4 raises
+the floor on the mistakes that are mechanical. D3, the reviewer, is the layer that can notice
+the rest, and D5 (rebuild with skills) is the only thing that can show whether it improved.
 
 ## Phase D5 — Proof (medium)
 

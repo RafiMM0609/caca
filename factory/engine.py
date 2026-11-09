@@ -468,7 +468,24 @@ class Engine:
                                     "`changed_files` is the authoritative list of every file the worker touched. "
                                     "Lockfile contents are omitted from `diff` because they are generated and "
                                     "oversized; a changed lockfile is not an error, and an omitted file is not a "
-                                    "missing file. Judge only what the diff actually shows.",
+                                    "missing file. Judge only what the diff actually shows.\n\n"
+                                    "If the diff contains interface code (CSS, a template, a component), "
+                                    "also review it as design, using these as defects rather than "
+                                    "preferences:\n"
+                                    "- Motion with no stated purpose, or `transition: all`.\n"
+                                    "- `ease-in` or a bare duration with no timing function on an "
+                                    "entrance or hover; decelerating motion reads as responsive.\n"
+                                    "- `outline: none` without a `:focus-visible` replacement; this "
+                                    "removes the keyboard user's position indicator.\n"
+                                    "- Colour alone carrying state, with no text or shape signal.\n"
+                                    "- A solid border where a soft shadow would read as depth, and "
+                                    "inputs left at browser default styling.\n"
+                                    "- Fixed pixel widths that break at 360px, or body text smaller "
+                                    "than 14px.\n"
+                                    "- `user-select: none` on content a reader may want to copy.\n"
+                                    "Reject a change that has these; do not reject one merely because a "
+                                    "layout differs from how you would have drawn it. You cannot run a "
+                                    "browser, so judge what the CSS and markup will do, not how it looks.",
                                     {"brief": project["brief"], "task": task.model_dump(),
                                      "changed_files": products.changed_files(worktree, base),
                                      "diff": diff or "(no file changes)"}, Review, cancelled)
