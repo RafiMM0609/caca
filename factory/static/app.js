@@ -164,15 +164,13 @@ function startEdit(row, plan, taskIndex, index, text) {
     action(async () => {
       const copy = deepCopyPlan(plan);
       copy.tasks[taskIndex].acceptance[index] = value;
-      // The answer to "did anyone notice the tests no longer match" is a line of text, not a
-      // mechanism. Enforcing it would mean task-to-flow linkage, which restricts the planner.
-      const instructionsChanged = copy.tasks[taskIndex].instructions !== plan.tasks[taskIndex].instructions;
-      editNotice = instructionsChanged
-        ? "Instruksi task berubah, tetapi skenario uji tidak. Periksa apakah tester masih menguji hal yang benar."
-        : "";
       await api("/projects/" + current + "/plan", { method: "PUT",
         body: JSON.stringify({ revision: projectData.revision, plan: copy }) });
-      editNotice = "";
+      // Editing a criterion never edits a test flow, so every save widens the gap between what
+      // the worker builds and what the tester checks. Saying so is the honest thing to do.
+      // Enforcing it would mean task-to-flow linkage, which restricts the planner.
+      editNotice = "Kriteria tersimpan. Skenario uji tidak ikut berubah — pastikan tester masih "
+                 + "menguji perilaku ini, atau sesuaikan skenario uji lewat Edit plan JSON.";
       notify("Kriteria tersimpan sebagai revisi baru.");
     });
   };
@@ -197,7 +195,15 @@ function renderProject(project, events) {
   renderQuestions(plan, active);
   if (plan?.assumptions.length) $("plan-questions").append(el("p", "Assumptions: " + plan.assumptions.join(" · "), "muted"));
   $("tasks").replaceChildren();
-  if (editNotice) { $("tasks").append(el("div", editNotice, "notice")); }
+  if (editNotice) {
+    const notice = el("div", undefined, "notice");
+    notice.append(el("span", editNotice));
+    const dismiss = el("button", "Tutup", "quiet");
+    dismiss.type = "button";
+    dismiss.onclick = () => { editNotice = ""; dismiss.parentElement.remove(); };
+    notice.append(dismiss);
+    $("tasks").append(notice);
+  }
   for (const [index, task] of (plan?.tasks || []).entries()) {
     const item = el("div", undefined, "task");
     item.append(el("small", task.id), el("strong", task.title));

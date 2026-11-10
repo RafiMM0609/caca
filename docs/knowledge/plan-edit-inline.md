@@ -86,6 +86,18 @@ selectors; the revision advanced to 2.
 `acceptance` array and mutates the plan the screen is rendering, which would leave a change
 visible after a save that never happened. 6 tests.
 
+### The sync notice was dead code, and is now real
+
+The first implementation computed `instructionsChanged` by comparing a field it had just copied,
+which is always false, then cleared the notice before any render could show it. The condition
+was also wrong on the merits: editing a criterion **never** edits a test flow, so every save
+widens the gap. It now always explains that, stays visible across the 4-second poll because it
+lives in a module variable, and carries a dismiss button. Verified in a browser: 0 notices
+before saving, 1 after, still there after 5 seconds, 0 after dismissing.
+
+That bug is worth recording because the unit tests could not have caught it — they cover the
+copy semantics, not whether a line ever reaches the screen.
+
 ### Not built, as planned
 
 Adding or removing a task, a form for flows and selectors, task-to-flow linkage, and any
