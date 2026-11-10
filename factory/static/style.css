@@ -40,3 +40,70 @@
 .selector{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:10px;font-size:11px}
 .selector code{overflow-wrap:anywhere;color:var(--muted)}
 .selector code:first-child{color:var(--green)}
+
+/* --- mobile: the detail view is the part that actually broke -------------------------------
+   Measured at 390px: <html> scrollWidth was 643. The cause was not a fixed width but unwrapped
+   text — a <p> inside the detail grid had clientWidth 256 and scrollWidth 750, so the whole
+   page grew to fit the longest planner question. `.detail-grid` switches to one column below
+   1000px, but a grid column still refuses to shrink below its content unless minmax(0,1fr) is
+   used, and long unbroken strings (selector names, URLs, digests) never wrap by default. */
+.detail-grid{grid-template-columns:minmax(0,1fr)}
+.detail-grid > *{min-width:0}
+.panel{min-width:0}
+#plan-questions,.question-form,.question{min-width:0}
+.question-form{display:flex;flex-direction:column;gap:14px;margin:14px 0 4px}
+.question{display:flex;flex-direction:column;gap:6px}
+.question label{display:block;font-weight:500;color:var(--ink);line-height:1.45;
+  overflow-wrap:anywhere;word-break:break-word}
+.question textarea{width:100%;min-width:0}
+/* Anything a worker or planner wrote: a selector, a URL, a digest, a long identifier. Wrapping
+   is the default because the opposite overflowed the page. */
+#plan-questions p,#plan-summary,.task ul,#artifact-info,#artifact-info code,.event pre,.job,
+.muted,.task,.task strong,.criterion,.wave-row,.exec-stat{overflow-wrap:anywhere;word-break:break-word}
+#plan-summary,#project-brief{max-width:100%}
+#artifact-info code{white-space:pre-wrap}
+
+@media(max-width:650px){
+  /* Touch targets: 10px padding is under the 44px guidance once the font is 12px. */
+  button{padding:12px 16px;min-height:44px;font-size:13px}
+  .quiet{padding:12px 16px}
+  #message{left:12px;right:12px;bottom:12px;padding:13px 16px}
+  /* A 5-column pipeline cannot be read at 390px. Wrap it into a readable list instead. */
+  .pipeline{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 14px;font-size:10px}
+  .pipeline span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .heading{flex-wrap:wrap;gap:12px}
+  .heading h1{font-size:26px;letter-spacing:-1px}
+  .heading .primary{min-height:44px}
+  .panel{padding:16px}
+  .section-title{flex-wrap:wrap;align-items:center}
+  .detail-grid{gap:16px}
+  .task{padding:14px 0}
+  .criterion{padding:6px 0}
+  .criterion-actions{gap:10px;flex-wrap:wrap}
+  .criterion-actions button{min-height:40px}
+  .question textarea{font-size:16px}  /* 16px prevents iOS from zooming the page on focus */
+  .stack{gap:12px}
+  .stack button{width:100%}
+  dialog{width:calc(100vw - 24px);padding:20px}
+  .dialog-actions{flex-wrap:wrap}
+  .dialog-actions button{flex:1 1 auto;min-height:44px}
+  #evidence-dialog{width:calc(100vw - 24px)}
+  .selectors{grid-template-columns:1fr}
+  .selector{grid-template-columns:1fr;gap:2px}
+  .worker-node{margin-left:0;padding:12px 14px}
+  .exec-summary{grid-template-columns:1fr 1fr}
+}
+
+/* Worker instructions are free text from the planner. At 390px a <p> inside .worker-node had
+   clientWidth 286 and scrollWidth 550, so long instruction prose still pushed past its box even
+   after the page itself stopped growing. The grid column is the constraint; the text must wrap. */
+.worker-node p,.worker-node li,.worker-node strong,.worker-node summary,.worker-term,
+.worker-review,.worker-review span{overflow-wrap:anywhere;word-break:break-word;min-width:0}
+.worker-node{min-width:0}
+.worker-node > *{min-width:0}
+@media(max-width:650px){
+  .worker-node summary{gap:10px;flex-wrap:wrap}
+  .worker-node{padding:12px 12px}
+  .worker-planner{flex-wrap:wrap;gap:8px}
+  .worker-review{flex-wrap:wrap;gap:6px}
+}
