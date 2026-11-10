@@ -1,134 +1,230 @@
 # Serving a built product — final plan
 
-Written 2026-11-10, revised after measuring what already exists.
+Written 2026-11-10. Revised three times as measurement replaced assumption. Nothing implemented.
 
-## What "deploy" means here
+## What is actually being built
 
-Not the existing `Target`/`Deployer` path. That pushes an artifact over SSH to another host.
-This runs the product **on this machine** and exposes it through the Cloudflare tunnel that
-already serves other applications on separate subdomains.
+**Not a second build.** Not a deploy to another host. One thing: take the build output the
+verifier already produced, put a copy somewhere stable, and keep a Node process running on a
+local port so a Cloudflare hostname can point at it.
 
-## The discovery that replaced a day of work
+## What already happens today
 
-The verifier **already builds the product and keeps the output**:
+Every `build` job already runs `npm ci` and `npm run build`, inside a temporary directory:
 
 ```python
-# factory/verifier.py:204
-built = work / profile.artifact_dir
-shipped = list(files_under(built, allow_symlinks=True))
-logs.append("BUILD OUTPUT: ... (not published; the artifact is the source tree)")
-if output is not None:
-    shutil.copytree(built, output, symlinks=True, dirs_exist_ok=True)
+# factory/verifier.py:99
+with tempfile.TemporaryDirectory(prefix="sf-native-", dir=source.parent) as directory:
+    work = Path(directory) / "app"
+    clone_tree(source, work)
+    # npm ci, npm run build, acceptance tests
 ```
 
-`engine.py` passes `output`, and it lands at `data/jobs/<job>/output/`. Measured:
+The result is copied out to `data/jobs/<job>/output/`, and the temporary tree — 211 MB of
+`node_modules` — is deleted when the `with` block ends. Nothing is duplicated, and nothing is
+left behind.
 
-| Job | Project | `output/` size |
+What persists after a successful build:
+
+| Path | Content | Size |
 | --- | --- | --- |
-| `e1da2910` | Perpustakaan Enterprise | **3.1 MB** |
-| `7da7025f` | Perpustakaan Mini | 11 MB |
-| `91ff63db` | Toko Roti Sederhana | 30 MB |
+| `data/products/<id>/` | source (git repository) | ~1.4 MB |
+| `data/jobs/<job>/output/` | **build output** | 3.1–30 MB |
+| `data/jobs/<job>/artifact.tar.gz` | source, for hand-off | ~240 KB |
 
-So serving needs **no build at all**: no `npm ci`, no `npm run build`, no 216 MB transient
-tree. My earlier estimate of 1.5 days is cut because the runner reduces to copying a few
-megabytes and starting a process.
+Measured outputs: Enterprise 3.1 MB, Mini 11 MB, Toko Roti 30 MB. Size varies because the older
+build bundles `better-sqlite3` prebuilds for three platforms at 2.0–2.4 MB each. **A serving
+estimate must read the previous `output/`, never assume 3 MB.**
 
-Older outputs are larger because they carry real dependency bundling — the Toko Roti build
-ships `better-sqlite3` prebuilds (2.0-2.4 MB per platform, 26 MB total in `server/node_modules`),
-after the operator's brief named SQLite. Size varies per product; "3 MB" is a floor, not a rule.
-**A serving size estimate must read the previous `output/`, not assume 3 MB.**
+## Why a copy is required
 
-## Verified with a real server
+`factory/engine.py:347` deletes `output/` before the next verification of the same project:
 
-Two outputs were started standalone against a live Node process, 30+ minutes after their builds,
-from the `output/` directory alone:
+```python
+if output.exists():
+    shutil.rmtree(output)
+```
 
-- `e1da2910` (Enterprise): `/api/health` → `{"status":"ok"}`, `/api/users` → `{"items":[],"total":0}`
-- `(old job)` (Toko Roti): `/api/health` → `{"status":"ok"}`
+An app started from `data/jobs/<job>/output/` would therefore die — or dangle — the moment the
+operator rebuilds that project. So serving copies it to a location that owns its own lifecycle:
 
-`server/node_modules` (2.1-26 MB inside `output/`) carries the runtime dependencies, so no
-`node_modules` beside the build is needed. This is the answer to whether serving duplicates
-storage: the 211 MB is paid once, transiently, inside the verifier's own `TemporaryDirectory`
-and never stored.
+```
+data/jobs/<job>/output/   →  copy  →  data/served/<project>/
+```
 
-## Scope
+A symlink is rejected for the same reason plus a second one: the target disappears, and a
+dangling link is a worse failure than a copy costing a few megabytes.
 
-**It applies to a profile only when it defines both `artifact_dir` and `serve_argv`.**
+**One version is kept.** No rollback archive. If a rebuild is bad, the operator rebuilds again —
+which re-runs the acceptance suite, so the new output is verified rather than assumed good.
+
+## Frontend and backend are one process
+
+The generated product is Nuxt SSR. A single Node process serves both:
+
+| Route | Served by |
+| --- | --- |
+| `/` | SSR-rendered HTML from `server/chunks/` |
+| `/api/users` | API route handlers in the same bundle |
+| `/_nuxt/*.js` | static assets from `public/` |
+
+Verified live: from `output/` alone, with no `node_modules` beside it, `/api/health` returned
+`{"status":"ok"}` and `/api/users` returned `{"items":[],"total":0}`. Two different jobs were
+started this way, one of them 30+ minutes after its build.
+
+So there is no separate frontend deploy, no second port, and no second process. One port serves
+both, and the Cloudflare hostname points at that one port.
+
+## Profile requirements
+
+A profile is servable only when it defines **both** `artifact_dir` and `serve_argv`.
 
 | Profile | `artifact_dir` | `serve_argv` | Servable |
 | --- | --- | --- | --- |
 | `nuxt-studio` | `release` | `node release/server/index.mjs` | **yes** |
-| `node` | `dist` | **none** | no — needs `serve_argv` |
-| `static` | **none** | none | no — Docker checks export a source copy to `/output`, not a runnable app |
+| `node` | `dist` | *(none)* | no |
+| `static` | *(none)* | *(none)* | no — Docker check exports source, not a runnable app |
 
-Every project in this repository is `nuxt-studio`, so every product built so far is servable.
-The other two are recorded as gaps rather than silently assumed.
-
-`static` exports via `FACTORY_OUTPUT` inside its Docker check (`checks/static.py` copies the
-source into a tarball), so the "built output" there is the source itself and cannot start a
-server. Serving a static app would need a general static file server instead of
-`profile.serve_argv`.
+Every project in this repository uses `nuxt-studio`. The other two are recorded as gaps, and
+the runner must refuse with the name of the missing field rather than crash.
 
 ## Components
 
-1. **Runner** — copy `data/jobs/<published-jobs>/output/` into `data/served/<project>-<rev>/` and
-   start `profile.serve_argv` there with `PORT`, `DATA_DIR`, `DATABASE_URL`. A copy rather than a
-   symlink: the engine deletes `output/` before its next verification and a symlinked app would
-   die or dangle mid-flight. 3-30 MB per app; storage is not the constraint.
-2. **Registry** — a `served_apps` table: project, port, url, state, artifact digest, pid,
-   started, last health check. The dashboard and the tunnel read it.
-3. **Health loop** — every 30s, `GET profile.readiness_path`. Dead → restart once, record it.
-   Repeated failures mark the app `unhealthy` and stop retrying. No alerting.
-4. **Control endpoints** — `POST /api/projects/<id>/serve`, `POST .../stop`, `GET /api/apps`.
-   Operator token. Starting an app whose digest changed copies the newer output instead of
-   serving stale code.
-5. **Dashboard** — per project: Start/Stop, the port, the URL, the state.
+### 1. `served_apps` table
 
-The runner must stop rather than starve: it cannot start an app when the profile lacks
-`artifact_dir` or `serve_argv`, and must say which one is missing rather than crashing.
+Follows the existing `CREATE TABLE` pattern in `factory/db.py`.
 
-## Deliberate operational model
+| Column | Meaning |
+| --- | --- |
+| `project_id` | one row per project; starting again replaces |
+| `port` | allocated at start, released at stop |
+| `state` | `starting`, `running`, `stopped`, `unhealthy` |
+| `digest` | artifact digest the copy was made from |
+| `job_id` | which build produced it |
+| `pid` | for a stale-row check after a crash |
+| `started`, `checked` | timestamps |
 
-Two apps at most, one live at a time by SOP, stopped manually by the operator. Not enforced in
-code — a hard limit would need to know the machine's capacity and would be wrong on a bigger box.
+### 2. Runner — `factory/serving.py`
+
+- Resolve the published job: the artifact record already holds `job_id` and `digest`.
+- Copy `data/jobs/<job_id>/output/` to `data/served/<project_id>/`, replacing any previous copy.
+- Start `profile.serve_argv` there using the existing `LocalApp`, which already allocates a free
+  port, spawns under `watchdog.py` so the child dies with the parent, injects
+  `PORT`/`NITRO_PORT`/`HOST`, and kills the process group on close.
+- Resolve `profile.env` through `expand_env` with `data_dir = app_data_dir(settings, project)`,
+  so `DATABASE_URL` and `DATA_DIR` point at `data/product-data/<project>/` and survive a restart.
+  This reuses the existing helper rather than inventing a second env convention.
+- Wait for `profile.readiness_path`, then record `running`.
+
+`LocalApp` lives for one verification today. Serving holds the same object open in the scheduler
+process and records it; the gap is lifetime, not machinery.
+
+### 3. Health loop
+
+Every 30 s, request `profile.readiness_path` on each running app.
+
+- Failure → restart once, record `serve.restarted`.
+- Failure again within the same run → mark `unhealthy`, stop retrying, record why.
+
+No alerting, no paging. A dead app at 03:00 stays dead until someone looks. That is a deliberate
+deferral, not an oversight.
+
+### 4. Job kind and lane
+
+A new `serve` job kind, claimed by its own lane, because the existing claim predicate sends every
+non-deploy job to `build`:
+
+```python
+# factory/db.py:173
+predicate = "kind='deploy'" if lane == "deploy" else "kind!='deploy'"
+```
+
+That predicate must gain a `serve` branch, or a serve job will be picked up by the build lane and
+run alongside a build. `factory/cli.py` gains `--lane serve`.
+
+A long-lived app does not belong in the build lane, which finishes each job and is expected to
+exit. The serve lane owns process lifetime.
+
+### 5. Endpoints
+
+| Endpoint | Behaviour |
+| --- | --- |
+| `POST /api/projects/<id>/serve` | enqueue a serve job; refuse when no verified artifact |
+| `POST /api/projects/<id>/stop` | stop the process group, free the port, mark `stopped` |
+| `GET /api/apps` | running apps: project, port, url, state, digest, uptime |
+
+Operator token. `GET /api/apps` is what a tunnel is pointed at.
+
+### 6. Dashboard
+
+Per project with a verified artifact: a Start/Stop control, the local port, the URL, and the
+state. No new page — the existing artifact panel gains the controls.
+
+## Cloudflare is out of scope, deliberately
+
+The tunnel already serves other applications on separate subdomains. Adding a hostname needs
+dashboard or account access this repository does not have, and the existing token must not be
+touched by this work.
+
+The division is:
+
+| This repository | The operator |
+| --- | --- |
+| Start the app, allocate the port | Add the hostname in Cloudflare |
+| Report port and URL at `GET /api/apps` | Point the hostname at `localhost:<port>` |
+
+The operator's model is one shared tunnel with several `ingress` hostnames.
+
+## Operational model
+
+Two apps at most, one live at a time by SOP — the operator stops one before starting another.
+Not enforced in code: a hard limit would need to know the machine's capacity and would be wrong
+on a larger box.
 
 ## Not in this plan
 
-- Cloudflare configuration. The tunnel already serves other apps; adding hostnames needs
-  dashboard access this repo does not have. `GET /api/apps` exposes the port so the operator can
-  point a hostname at it. The operator's plan is one shared tunnel with several `ingress`
-  hostnames, pointing at `localhost:<port>`.
-- Environment variable glue beyond what is already in the profile: it should resolve from
-  `profile.env` with `{data}`/`{app}` via `expand_env`, not hard-coded names.
+- Rollback archives. One copy per project.
 - Crash alerting, log shipping, metrics.
+- Serving a profile without `artifact_dir` and `serve_argv`.
+- Re-running the acceptance suite against a served app.
+- Any change to the existing SSH `Target`/`Deployer` path.
 
 ## Done when
 
-- Starting a project serves its built `output/` copy and the dashboard shows a reachable URL.
-- Stopping releases the port and the process group is gone (no orphan).
-- `GET /api/apps` lists what is running, so a tunnel can be pointed at a port.
-- A dead app is restarted once and the restart is visible as an event.
-- Starting an app with a newer artifact copies the newer output instead of serving stale code.
-- A profile without `artifact_dir` or `serve_argv` reports a clear refusal instead of crashing.
+- Starting a project copies its verified `output/` and the dashboard shows a reachable URL.
+- Stopping releases the port and leaves no orphan process.
+- `GET /api/apps` lists running apps with ports, so a tunnel can be pointed at one.
+- A killed app is restarted once, and the restart appears as an event.
+- Rebuilding a project and starting it again serves the newer output, with the digest updated.
+- A profile missing `artifact_dir` or `serve_argv` is refused by name, not by traceback.
+- A serve job is never claimed by the build lane.
 
 ## Risks, stated plainly
 
-- **One machine.** The factory and every served product share it. A product that eats RAM
-  starves the factory, and the factory is what fixes products.
-- **Native, not sandboxed.** `FACTORY_ALLOW_NATIVE` applies; there is no container boundary
-  between two served products or between a product and the factory.
-- **The artifact is executed as-is.** It passed the verifier, but serving does not re-run the
-  acceptance suite. A served app is not continuously verified.
-- **`output/` is not archived.** The engine deletes it before the next verification and nothing
-  in this plan preserves old builds, so there is no rollback copy beyond what exists.
+- **One machine.** The factory and every served product share CPU, RAM and disk. A product that
+  eats memory starves the factory, and the factory is what fixes products. One-at-a-time is the
+  current answer, not a technical limit that was enforced.
+- **Native, not sandboxed.** `FACTORY_ALLOW_NATIVE` applies. There is no container boundary
+  between two served products, or between a product and the factory.
+- **Serving executes what the verifier approved, once.** A served app is not re-verified; it is
+  the artifact that passed at build time.
+- **No rollback.** A bad rebuild replaces the good copy. The acceptance suite is the guard, and
+  it ran before the output was published.
+- **The copy is a full directory, not incremental.** A 30 MB product costs 30 MB; two apps cost
+  what their outputs weigh.
 
 ## Effort
 
 | Step | Estimate |
 | --- | --- |
-| Runner (copy + spawn + registry) | ~4-5 hours |
-| Health loop + restart-once | ~2 hours |
-| Control endpoints (`/serve`, `/stop`, `/apps`) | ~2 hours |
-| Dashboard controls (Start/Stop, port, URL) | ~3 hours |
-| Tests, including the two refusal paths | ~2 hours |
-| **Total** | **~1.5 days of focused work** |
+| `served_apps` table + port allocation + stale-row recovery | ~2 h |
+| Runner: copy, spawn, readiness, stop | ~4 h |
+| Health loop with restart-once | ~2 h |
+| `serve` job kind + lane claim branch + CLI flag | ~2 h |
+| Endpoints: serve, stop, apps | ~2 h |
+| Dashboard controls | ~3 h |
+| Tests: refusal paths, lane isolation, restart, replacement | ~3 h |
+| **Total** | **~1.5 days** |
+
+First milestone worth stopping at: table + runner + `GET /api/apps`, with a manual start. That
+proves the tunnel can be pointed at a port before the dashboard and health loop are built.

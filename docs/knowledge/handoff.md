@@ -270,6 +270,25 @@ Checkpoint: 2026-11-08, after commit `5eb3318`. Read [origin and decisions](orig
   `static` has neither and exports source via `FACTORY_OUTPUT` in Docker, not a runnable app.
   Full plan in [plan-serve-lane.md](plan-serve-lane.md), ~1.5 days of work.
 
+- **Serve plan finalised, with the lane detail that would have broken it** (2026-11-10). The
+  plan is [plan-serve-lane.md](plan-serve-lane.md). Serving is not a second build: the verifier
+  already runs `npm ci` and `npm run build` inside a `TemporaryDirectory`, copies
+  `profile.artifact_dir` to `data/jobs/<job>/output/`, and deletes the 211 MB tree. Measured
+  outputs are 3.1, 11 and 30 MB, and two were started standalone long after their builds —
+  `/api/health` answered in both, from `output/` alone with its bundled
+  `server/node_modules`.
+  A copy is mandatory rather than tidy: `engine.py:347` deletes `output/` before the next
+  verification of the same project, so an app served from there would die on rebuild, and a
+  symlink would dangle. One copy per project, no rollback archive.
+  **The detail that would have broken it:** `db.py:173` claims every non-deploy job into the
+  build lane, so a `serve` job would have been picked up and run beside a build. The plan adds a
+  `serve` branch to that predicate and a `--lane serve` flag. `nuxt-studio` is the only servable
+  profile today (it is the only one with both `artifact_dir` and `serve_argv`); `node` lacks
+  `serve_argv` and `static` lacks both.
+  Cloudflare stays out of scope: the tunnel serves other apps and adding hostnames needs account
+  access this repository does not have. `GET /api/apps` exposes the port instead.
+  Not implemented. ~1.5 days, with the first milestone being table + runner + `GET /api/apps`.
+
 ## Code map
 
 | Area | Main files |
