@@ -1,6 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
-let token = "", current = null, status = null, projectData = null, polling = false, revision = null;
+let token = "", current = null, status = null, projectData = null, polling = false, revision = null, editNotice = "";
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (cls) node.className = cls; return node; };
 const parsed = value => value ? JSON.parse(value) : null;
 function notify(text, error = false) { $("message").textContent = text; $("message").className = error ? "error" : ""; $("message").hidden = false; setTimeout(() => $("message").hidden = true, 8000); }
@@ -98,6 +98,90 @@ async function refresh() {
     }
   } finally { polling = false; }
 }
+// Inline editing of one acceptance criterion.
+//
+// The purpose is narrow: a feature does not match what the user wants, so change the sentence
+// and rebuild. Adding or removing a task is deliberately not offered — that is planning work,
+// and the answer is to regenerate the plan.
+//
+// The whole plan is sent on save rather than a patch. `PUT /api/projects/<id>/plan` already
+// accepts a complete plan and rejects a stale revision, and patching server-side would mean a
+// second write path with its own rules to keep in sync.
+function deepCopyPlan(plan) {
+  // A shallow spread would share the nested `tasks` and `acceptance` arrays, so mutating the
+  // copy would silently mutate `projectData.plan` too and a failed save would leave the screen
+  // showing a change that was never stored.
+  return JSON.parse(JSON.stringify(plan));
+}
+
+function editableCriteria(plan, taskIndex, active) {
+  const list = el("ul", undefined, "criteria");
+  const task = plan.tasks[taskIndex];
+  for (const [index, text] of task.acceptance.entries()) {
+    const row = el("li");
+    if (active) {
+      row.append(el("span", text));
+      list.append(row);
+      continue;
+    }
+    const button = el("button", text, "criterion");
+    button.type = "button";
+    button.title = "Klik untuk mengubah";
+    button.onclick = () => startEdit(row, plan, taskIndex, index, text);
+    row.append(button);
+    list.append(row);
+  }
+  return list;
+}
+
+function resetCriterion(row, plan, taskIndex, index, text) {
+  row.replaceChildren();
+  const button = el("button", text, "criterion");
+  button.type = "button";
+  button.title = "Klik untuk mengubah";
+  button.onclick = () => startEdit(row, plan, taskIndex, index, text);
+  row.append(button);
+}
+
+function startEdit(row, plan, taskIndex, index, text) {
+  row.replaceChildren();
+  const editor = el("textarea");
+  editor.value = text;
+  editor.rows = 2;
+  editor.className = "criterion-editor";
+  const save = el("button", "Simpan", "primary");
+  save.type = "button";
+  const cancel = el("button", "Batal", "quiet");
+  cancel.type = "button";
+  // Re-render through the same path as the first click. Attaching the handler by hand left the
+  // row dead after one cancel, because it ran once and was never reattached.
+  cancel.onclick = () => { resetCriterion(row, plan, taskIndex, index, text); };
+  save.onclick = () => {
+    const value = editor.value.trim();
+    if (!value) { notify("Kriteria tidak boleh kosong.", true); return; }
+    if (value === text) { cancel.onclick(); return; }
+    save.disabled = true;
+    action(async () => {
+      const copy = deepCopyPlan(plan);
+      copy.tasks[taskIndex].acceptance[index] = value;
+      // The answer to "did anyone notice the tests no longer match" is a line of text, not a
+      // mechanism. Enforcing it would mean task-to-flow linkage, which restricts the planner.
+      const instructionsChanged = copy.tasks[taskIndex].instructions !== plan.tasks[taskIndex].instructions;
+      editNotice = instructionsChanged
+        ? "Instruksi task berubah, tetapi skenario uji tidak. Periksa apakah tester masih menguji hal yang benar."
+        : "";
+      await api("/projects/" + current + "/plan", { method: "PUT",
+        body: JSON.stringify({ revision: projectData.revision, plan: copy }) });
+      editNotice = "";
+      notify("Kriteria tersimpan sebagai revisi baru.");
+    });
+  };
+  const buttons = el("div", undefined, "criterion-actions");
+  buttons.append(save, cancel);
+  row.append(editor, buttons);
+  editor.focus();
+}
+
 function renderProject(project, events) {
   projectData = project;
   renderWaveView(project, events);
@@ -113,11 +197,38 @@ function renderProject(project, events) {
   renderQuestions(plan, active);
   if (plan?.assumptions.length) $("plan-questions").append(el("p", "Assumptions: " + plan.assumptions.join(" · "), "muted"));
   $("tasks").replaceChildren();
-  for (const task of plan?.tasks || []) { const item = el("div", undefined, "task"), criteria = el("ul"); for (const text of task.acceptance) criteria.append(el("li", text)); item.append(el("small", task.id), el("strong", task.title), criteria); $("tasks").append(item); }
+  if (editNotice) { $("tasks").append(el("div", editNotice, "notice")); }
+  for (const [index, task] of (plan?.tasks || []).entries()) {
+    const item = el("div", undefined, "task");
+    item.append(el("small", task.id), el("strong", task.title));
+    // Instructions were never displayed, so a wrong sentence could only be found by scanning
+    // the JSON textarea. Collapsed by default: readable when wanted, not a wall of text.
+    if (task.instructions) {
+      const details = el("details", undefined, "instructions");
+      details.append(el("summary", "Instruksi"));
+      details.append(el("pre", task.instructions));
+      item.append(details);
+    }
+    item.append(editableCriteria(plan, index, active));
+    $("tasks").append(item);
+  }
   for (const flow of plan?.test_flows || []) {
     const item = el("div", undefined, "task");
     item.append(el("small", "TESTER FLOW · " + flow.kind.toUpperCase()), el("strong", flow.goal));
-    const steps = el("ol"); flow.steps.forEach(text => steps.append(el("li", text))); item.append(steps); $("tasks").append(item);
+    const steps = el("ol"); flow.steps.forEach(text => steps.append(el("li", text))); item.append(steps);
+    if (Object.keys(flow.selectors || {}).length) {
+      const table = el("div", undefined, "selectors");
+      for (const [name, selector] of Object.entries(flow.selectors)) {
+        const row = el("div", undefined, "selector");
+        row.append(el("code", name), el("code", selector));
+        table.append(row);
+      }
+      const details = el("details", undefined, "instructions");
+      details.append(el("summary", "Selector (" + Object.keys(flow.selectors).length + ")"));
+      details.append(table);
+      item.append(details);
+    }
+    $("tasks").append(item);
   }
   if (revision !== project.revision) { $("plan-editor").value = JSON.stringify(plan || { summary: "Describe the approved scope here", assumptions: [], questions: [], tasks: [] }, null, 2); revision = project.revision; }
   $("save-plan").disabled = active;

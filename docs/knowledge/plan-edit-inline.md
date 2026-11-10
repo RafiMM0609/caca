@@ -1,6 +1,6 @@
-# Inline plan editing — plan
+# Inline plan editing — **DONE 2026-11-10**
 
-Written 2026-11-10. Proposal; nothing here is implemented.
+Written 2026-11-10, implemented the same day.
 
 ## The problem, stated precisely
 
@@ -63,11 +63,33 @@ plan and enforces revision matching, so the UI sends the full object with one fi
 
 ## Done when
 
-- Clicking a criterion edits it, and the change survives a page reload.
-- A save produces a new revision and the Approve button follows it.
-- Editing is refused while a job is running, and the UI says why.
-- `instructions` are readable without opening the JSON textarea.
-- The JSON textarea still works unchanged.
+- Clicking a criterion edits it, and the change survives a page reload. **Done.**
+- A save produces a new revision and the Approve button follows it. **Done:** revision 1 to 2,
+  `plan.edited` recorded, and the Approve handler reads the same `revision` variable.
+- Editing is refused while a job is running, and the UI says why. **Done:** criteria render as
+  plain text while a job is queued or running, matching the server's refusal.
+- `instructions` are readable without opening the JSON textarea. **Done:** a collapsed
+  `<details>` per task, plus a `<details>` listing each flow's selectors.
+- The JSON textarea still works unchanged. **Done**, deliberately: it remains the only route
+  for adding a task and for editing selectors.
+
+### What was verified, and how
+
+In a real browser against a live factory, not only in unit tests: two criteria render as
+clickable buttons, `instructions` and the selector table render inside their collapsed blocks,
+clicking a criterion opens a textarea, Cancel restores a clickable row (this was a real bug —
+attaching the handler by hand left the row dead after one cancel), Save stores the change and
+the new text survives a refresh. The stored plan kept its instructions, its flow and all
+selectors; the revision advanced to 2.
+
+`tests/editing.test.cjs` covers the copy semantics: a shallow spread shares the nested
+`acceptance` array and mutates the plan the screen is rendering, which would leave a change
+visible after a save that never happened. 6 tests.
+
+### Not built, as planned
+
+Adding or removing a task, a form for flows and selectors, task-to-flow linkage, and any
+enforcement of the sync warning. The warning is a line of text.
 
 ## Risks
 

@@ -127,6 +127,27 @@ rather than silently dropped, a blank answer does not count, and unanswered ques
 place so the plan remains unapprovable instead of being approved with a gap. A second round
 accumulates rather than replacing the first.
 
+## Editing a plan
+
+A plan can be edited before approval, and the reason it exists is narrow: a feature does not
+match what the user wants, so change it and rebuild.
+
+Acceptance criteria render as buttons. Clicking one opens a textarea; Save stores the change as
+a new revision. Each task's `instructions` and each flow's `selectors` sit in collapsed blocks,
+so the specification is readable without opening the JSON editor — which is what actually
+blocked this before, since instructions were never displayed.
+
+Saving sends the **whole plan** with one field changed. `PUT /api/projects/<id>/plan` already
+validates the graph and rejects a stale revision, so there is one write path rather than a patch
+endpoint with its own rules. Editing is refused while a job is queued or running.
+
+**Adding a task is not offered.** That is planning work; regenerate the plan instead. The JSON
+editor remains for what inline editing deliberately omits — adding a task, changing selectors.
+
+**A known gap:** inline editing cannot guarantee the test flows track a change to a task's
+instructions. The UI shows a line of text when that happens, but does not block it. Enforcing it
+would mean linking tasks to flows structurally, which restricts what the planner may propose.
+
 ## Honest limits
 
 - Test quality still depends on the approved flows and assertions. Coverage validation is structural, not proof that every requirement is tested.
