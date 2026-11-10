@@ -23,7 +23,7 @@ def main():
     api.add_argument("--host", default="127.0.0.1")
     api.add_argument("--port", type=int, default=8080)
     scheduler = commands.add_parser("scheduler")
-    scheduler.add_argument("--lane", choices=["build", "deploy"], default="build")
+    scheduler.add_argument("--lane", choices=["build", "deploy", "serve"], default="build")
     run_p = commands.add_parser("run", help="Serve a project's published artifact with its persistent data directory")
     run_p.add_argument("project")
     run_p.add_argument("--port", type=int, default=3000)

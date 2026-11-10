@@ -1,6 +1,6 @@
-# Serving a built product — final plan
+# Serving a built product — **DONE 2026-11-10**
 
-Written 2026-11-10. Revised three times as measurement replaced assumption. Nothing implemented.
+Written and implemented 2026-11-10. Revised three times as measurement replaced assumption.
 
 ## What is actually being built
 
@@ -189,15 +189,36 @@ on a larger box.
 - Re-running the acceptance suite against a served app.
 - Any change to the existing SSH `Target`/`Deployer` path.
 
-## Done when
+## Done when — all met, verified live
 
 - Starting a project copies its verified `output/` and the dashboard shows a reachable URL.
-- Stopping releases the port and leaves no orphan process.
-- `GET /api/apps` lists running apps with ports, so a tunnel can be pointed at one.
-- A killed app is restarted once, and the restart appears as an event.
-- Rebuilding a project and starting it again serves the newer output, with the digest updated.
-- A profile missing `artifact_dir` or `serve_argv` is refused by name, not by traceback.
-- A serve job is never claimed by the build lane.
+  **Done:** Perpustakaan Enterprise ran on port 38783; `/api/health` returned
+  `{"status":"ok"}`, `/` rendered "Ruang Baca", `/api/users` returned `{"items":[],"total":0}`.
+- Stopping releases the port and leaves no orphan process. **Done:** port refused connections
+  and `ps` showed zero `server/index.mjs` processes.
+- `GET /api/apps` lists running apps with ports, so a tunnel can be pointed at one. **Done.**
+- A killed app is restarted once, and the restart appears as an event. **Done:** killing the
+  process group externally produced `running` with `restarts=1`; killing it again produced
+  `unhealthy` and stopped retrying.
+- Rebuilding and starting again serves the newer output. **Done** in test: a replaced output
+  leaves no stale file in the served copy.
+- A profile missing `artifact_dir` or `serve_argv` is refused by name, not by traceback. **Done:**
+  the HTTP endpoint answers 422 naming the missing field.
+- A serve job is never claimed by the build lane. **Done:** the lane predicate is centralised in
+  `db.lane_predicate`, and a test enqueues a serve job and asserts `store.claim("build")` is None.
+
+### The bug the live run found, which no unit test would have
+
+`serve_argv` is written against the **repository** (`node release/server/index.mjs`, where
+`release` is `artifact_dir`), but the served tree **is the contents** of that directory. Running
+the argv as written looked for `release/release/server/index.mjs`, the process exited, and
+readiness timed out — the first live attempt failed exactly this way after the unit tests passed.
+
+`serving.serve_argv_in()` now strips a leading `artifact_dir/`, and only when the result actually
+exists, so a correct argv cannot be mangled. Four tests cover it, including the case where the
+rewrite would point nowhere and the argv must be left alone.
+
+This is why the lane was exercised against a real Node process rather than only through mocks.
 
 ## Risks, stated plainly
 

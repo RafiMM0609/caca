@@ -181,6 +181,48 @@ Monitor worker heartbeat age, failed/unknown jobs, memory failures, disk use and
 
 Live Pi generation/review with the selected provider across all stages; a **single `build` job that runs a plan through workers, verification and publication in one attempt** (none has ever completed — every published artifact came from a separately enqueued `verify` job); live Memorix roundtrip; HTTPS and token rotation; actual staging/production SSH deployment; service restart, health failure and rollback; server reboot/interrupted-release recovery; full backup restoration; and application-specific browser/security/business tests. No remote production deployment was performed during implementation.
 
+## Serving a built product
+
+A verified artifact can be run on a local port and exposed through the tunnel that already
+serves other applications.
+
+```sh
+factory api                              # dashboard
+factory scheduler --lane serve           # owns served processes
+```
+
+**This does not build anything.** The verifier already ran `npm ci` and `npm run build` and kept
+the result at `data/jobs/<job>/output/`. Serving copies that to `data/served/<project>/` and
+starts `profile.serve_argv` there.
+
+**A copy, not a symlink.** `Engine.verify` deletes `output/` before the next verification of the
+same project, so an app served from there would die on rebuild and a symlink would dangle.
+
+**One process serves both halves.** The product is Nuxt SSR: `/` is rendered from
+`server/chunks/`, `/api/*` is handled from the same bundle, and `/_nuxt/*` is static from
+`public/`. There is no separate frontend to deploy and no second port.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/projects/<id>/serve` | start; 422 naming the missing field if the profile cannot be served |
+| `POST /api/projects/<id>/stop` | stop; the serve lane observes the removed row and releases the process |
+| `GET /api/apps` | port and URL per running app — this is what a hostname is pointed at |
+
+Only a profile with **both** `artifact_dir` and `serve_argv` can be served. Today that is
+`nuxt-studio`; `node` has no `serve_argv` and `static` has neither.
+
+**Health:** every 30 s the serve lane probes `readiness_path`. One restart is attempted; a second
+failure marks the app `unhealthy` and stops retrying. Nothing is paged — a dead app at 03:00
+stays dead until someone looks.
+
+**Cloudflare is not configured here.** Add the hostname in Cloudflare and point it at the port
+from `GET /api/apps`. The tunnel already serves other applications and its configuration is not
+owned by this repository.
+
+**Limits, stated:** one machine serves the factory and every product, so a product that eats RAM
+starves the factory; execution is native rather than sandboxed; and a served app is the artifact
+that passed at build time, not a continuously verified one.
+
 ## Client attribution and hand-off
 
 A project may carry an optional `client_id` (lowercase `[a-z0-9][a-z0-9_-]*`, max 80 chars),

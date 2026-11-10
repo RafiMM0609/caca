@@ -14,6 +14,23 @@ class Conflict(ValueError):
     pass
 
 
+# Which job kinds a lane claims. Written once because the two call sites drifted apart easily:
+# a new kind added to one and not the other is claimed by the wrong lane, and the symptom is a
+# long-lived app started inside the build lane that then exits.
+LANE_KINDS = {
+    "build": ("build", "plan", "verify"),
+    "deploy": ("deploy",),
+    "serve": ("serve",),
+}
+
+
+def lane_predicate(lane):
+    kinds = LANE_KINDS.get(lane)
+    if kinds is None:
+        raise ValueError(f"Unknown lane: {lane}")
+    return "kind IN (" + ",".join("'" + kind + "'" for kind in kinds) + ")"
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
@@ -54,6 +71,14 @@ class Store:
                   detail TEXT NOT NULL DEFAULT '{}', created REAL NOT NULL, started REAL, finished REAL,
                   revision INTEGER NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS workers_by_job ON workers(job_id, task_id);
+                -- One row per project, because only one build of a project is served at a time.
+                -- The port is allocated at start and released at stop; `pid` exists so a row
+                -- left behind by a crash can be recognised as stale rather than believed.
+                CREATE TABLE IF NOT EXISTS served_apps(
+                  project_id TEXT PRIMARY KEY REFERENCES projects(id),
+                  job_id TEXT NOT NULL, digest TEXT NOT NULL, port INTEGER NOT NULL,
+                  state TEXT NOT NULL, pid INTEGER, restarts INTEGER NOT NULL DEFAULT 0,
+                  detail TEXT NOT NULL DEFAULT '{}', started REAL NOT NULL, checked REAL);
             """)
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -170,7 +195,7 @@ class Store:
 
     def claim(self, lane="build"):
         with self.tx() as db:
-            predicate = "kind='deploy'" if lane == "deploy" else "kind!='deploy'"
+            predicate = lane_predicate(lane)
             row = db.execute("SELECT * FROM jobs WHERE state='queued' AND " + predicate + " ORDER BY created,id LIMIT 1").fetchone()
             if not row:
                 return None
@@ -188,10 +213,45 @@ class Store:
                 db.execute("UPDATE projects SET state=? WHERE id=?", (state, row["project_id"]))
             self.event_tx(db, row["project_id"], job, f"job.{state}", {"error": error})
 
+    # -- served apps --------------------------------------------------------------------
+
+    def served(self, project):
+        """The served-app row, or None. `one()` raises on a miss, and 'not served' is normal."""
+        rows = self.all("SELECT * FROM served_apps WHERE project_id=?", (project,))
+        return rows[0] if rows else None
+
+    def served_apps(self):
+        return self.all("SELECT * FROM served_apps ORDER BY started DESC")
+
+    def record_served(self, project, job, digest, port, state, detail=None):
+        with self.tx() as db:
+            db.execute(
+                "INSERT INTO served_apps(project_id,job_id,digest,port,state,detail,"
+                "started,checked) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET "
+                "job_id=excluded.job_id, digest=excluded.digest, port=excluded.port, "
+                "state=excluded.state, started=excluded.started, checked=excluded.checked, "
+                "detail=excluded.detail",
+                (project, job, digest, port, state, json.dumps(detail or {}),
+                 time.time(), time.time()))
+
+    def set_served_state(self, project, state, *, pid=None, detail=None, bump_restart=False):
+        with self.tx() as db:
+            db.execute("UPDATE served_apps SET state=?, checked=?, "
+                       "pid=COALESCE(?, pid), "
+                       "detail=COALESCE(?, detail), "
+                       "restarts=restarts+? WHERE project_id=?",
+                       (state, time.time(), pid,
+                        json.dumps(detail) if detail is not None else None,
+                        1 if bump_restart else 0, project))
+
+    def forget_served(self, project):
+        with self.tx() as db:
+            db.execute("DELETE FROM served_apps WHERE project_id=?", (project,))
+
     def recover(self, lane="build"):
         # Called only while holding the single scheduler's flock. Never replay a side effect.
         with self.tx() as db:
-            predicate = "kind='deploy'" if lane == "deploy" else "kind!='deploy'"
+            predicate = lane_predicate(lane)
             for row in db.execute("SELECT * FROM jobs WHERE state='running' AND " + predicate).fetchall():
                 db.execute("UPDATE jobs SET state='interrupted',error=?,finished=? WHERE id=?",
                            ("Scheduler restarted; inspect evidence before retry", time.time(), row["id"]))

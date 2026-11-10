@@ -180,6 +180,43 @@ function startEdit(row, plan, taskIndex, index, text) {
   editor.focus();
 }
 
+// A served app is the verified build output running on a local port. The port is the thing the
+// operator needs, because a Cloudflare hostname has to be pointed at it; the factory does not
+// touch the tunnel.
+function renderServed(project, artifact, active) {
+  const served = project.served;
+  const info = $("serve-info");
+  info.replaceChildren();
+  info.className = "muted";
+  const running = served && ["running", "restarting"].includes(served.state);
+  $("serve").hidden = running;
+  $("serve-stop").hidden = !running;
+  $("serve").disabled = !artifact || active;
+  $("serve-stop").disabled = active;
+  if (!artifact) {
+    info.textContent = "Belum ada artifact yang lolos verifikasi untuk dijalankan.";
+    return;
+  }
+  if (!served) {
+    info.textContent = "Jalankan untuk menyalakan hasil build di port lokal.";
+    return;
+  }
+  if (served.state === "unhealthy") {
+    info.className = "notice";
+    info.textContent = "Aplikasi berhenti dan gagal dinyalakan ulang. Periksa evidence, lalu jalankan lagi.";
+    return;
+  }
+  const line = document.createElement("div");
+  line.append(
+    document.createTextNode("Port " + served.port + " · " + served.state),
+    document.createElement("br"),
+    document.createTextNode("URL lokal: http://127.0.0.1:" + served.port),
+  );
+  if (served.restarts) line.append(document.createElement("br"),
+    document.createTextNode("Pernah dinyalakan ulang otomatis: " + served.restarts + "x"));
+  info.append(line);
+}
+
 function renderProject(project, events) {
   projectData = project;
   renderWaveView(project, events);
@@ -241,6 +278,7 @@ function renderProject(project, events) {
   $("artifact-info").replaceChildren();
   if (artifact) { $("artifact-info").append(el("span", `${artifact.files} files · ${Math.round(artifact.bytes / 1024)} KB · revision ${artifact.revision}`), el("code", artifact.digest)); } else $("artifact-info").textContent = "Available after review and verification pass.";
   for (const id of ["download", "source"]) $(id).disabled = !artifact;
+  renderServed(project, artifact, active);
   $("staging").disabled = !artifact || active || project.state !== "ready" || !status.targets.includes(project.id + ":staging");
   const staged = artifact && project.deployments.some(d => d.environment === "staging" && d.digest === artifact.digest && d.state === "succeeded");
   $("production").disabled = !staged || active || project.state !== "ready" || !status.targets.includes(project.id + ":production");
@@ -254,6 +292,14 @@ function renderProject(project, events) {
 $("generate").onclick = () => action(() => api("/projects/" + current + "/plan", { method: "POST" }));
 $("save-plan").onclick = () => action(() => api("/projects/" + current + "/plan", { method: "PUT", body: JSON.stringify({ revision, plan: JSON.parse($("plan-editor").value) }) }));
 $("approve").onclick = () => action(() => api("/projects/" + current + "/approve?revision=" + revision, { method: "POST" }));
+$("serve").onclick = () => action(async () => {
+  await api("/projects/" + current + "/serve", { method: "POST" });
+  notify("Aplikasi sedang dinyalakan. Port muncul setelah siap.");
+});
+$("serve-stop").onclick = () => action(async () => {
+  await api("/projects/" + current + "/stop", { method: "POST" });
+  notify("Permintaan berhenti dikirim.");
+});
 $("staging").onclick = () => release("staging"); $("production").onclick = () => release("production");
 function release(environment) { action(async () => { const releaseToken = $("release-token").value; if (environment === "production" && !releaseToken) throw new Error("Enter the separate production release token."); await api("/projects/" + current + "/deploy", { method: "POST", body: JSON.stringify({ environment, digest: parsed(projectData.artifact).digest }) }, environment === "production" ? releaseToken : undefined); $("release-token").value = ""; notify(environment + " release queued for the verified artifact."); }); }
 async function showEvidence(load) { await action(async () => { $("evidence").textContent = JSON.stringify(await load(), null, 2); $("evidence-dialog").showModal(); }); }

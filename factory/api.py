@@ -131,6 +131,7 @@ def create_app(settings=None):
         # did. Without it the dashboard could show plans but never the parallel work.
         result["workers"] = store.all("SELECT * FROM workers WHERE project_id=? ORDER BY created", (project,))
         result["deployments"] = store.all("SELECT * FROM deployments WHERE project_id=? ORDER BY created DESC", (project,))
+        result["served"] = store.served(project)
         return result
 
     @app.post("/api/projects/{project}/plan", status_code=202)
@@ -294,6 +295,54 @@ def create_app(settings=None):
             raise HTTPException(404, "No verified artifact yet")
         return FileResponse(settings.data / "jobs" / artifact["job_id"] / "artifact.tar.gz",
                             filename=f"{project}-{artifact['digest'][:12]}.tar.gz", media_type="application/gzip")
+
+    @app.post("/api/projects/{project}/serve", status_code=202)
+    def start_serving(project: str, _=Depends(operator)):
+        """Run the project's verified build output on a local port.
+
+        Refused before the job is queued when there is nothing to serve or the profile cannot
+        be started: learning that from a failed job is slower and less clear than being told
+        which field is missing.
+        """
+        from . import serving as serving_app
+
+        record = store.project(project)
+        if not record["artifact"]:
+            raise HTTPException(422, "This project has no verified artifact to serve")
+        profile = settings.profiles[record["profile"]]
+        ok, reason = serving_app.servable(profile)
+        if not ok:
+            raise HTTPException(422, reason)
+        artifact = json.loads(record["artifact"])
+        return store.enqueue(project, "serve", {"digest": artifact["digest"]},
+                             allowed={"ready", "failed", "cancelled", "interrupted", "awaiting_plan"},
+                             next_state="serving")
+
+    @app.post("/api/projects/{project}/stop")
+    def stop_serving(project: str, _=Depends(operator)):
+        """Stop a served app. The serve lane owns the process, so it is asked through a row
+        rather than killed from here: the dashboard process must not hold a handle it cannot
+        see the consequences of."""
+        row = store.served(project)
+        if row is None:
+            raise HTTPException(404, "This project is not being served")
+        store.forget_served(project)
+        store.event(project, None, "serve.stop_requested", {})
+        with store.tx() as db:
+            db.execute("UPDATE projects SET state=? WHERE id=?", ("ready", project))
+        return {"state": "stopping"}
+
+    @app.get("/api/apps")
+    def running_apps(_=Depends(operator)):
+        """What is running, so a tunnel can be pointed at a port."""
+        apps = []
+        for row in store.served_apps():
+            record = store.project(row["project_id"])
+            apps.append({"project": row["project_id"], "name": record["name"],
+                         "port": row["port"], "url": f"http://127.0.0.1:{row['port']}",
+                         "state": row["state"], "digest": row["digest"],
+                         "restarts": row["restarts"], "started": row["started"]})
+        return {"apps": apps}
 
     @app.get("/api/projects/{project}/export")
     def project_export(project: str, _=Depends(operator)):

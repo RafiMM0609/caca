@@ -10,6 +10,7 @@ import time
 from .agents import PiAgent
 from .db import Store, uid
 from .deploy import Deployer
+from . import serving
 from .memory import Memory
 from .models import Plan, Review
 from .parallel import WORKER_BRIEF, ParallelBuilder
@@ -166,6 +167,8 @@ class Engine:
                 result = self.build(project, job, work, cancelled, verification_only=job["kind"] == "verify")
             elif job["kind"] == "deploy":
                 result = self.deploy(project, job, cancelled)
+            elif job["kind"] == "serve":
+                result = self.serve_app(project, job, cancelled)
             else:
                 raise ValueError("Unknown job kind")
             self._record_timing(store, project_id, job_id, started, budget)
@@ -571,6 +574,131 @@ class Engine:
                          {"draft": edit, "branch": branch})
         return branch, worktree
 
+    # Live app handles, keyed by project. A running app is alive only because this process
+    # holds the reference, so the serve lane must never finish a job and exit the way the
+    # build lane does.
+    _served = {}
+
+    def serve_app(self, project, job, cancelled):
+        """Start a project's verified build output on a local port.
+
+        The artifact must be the published one: serving something that failed verification
+        would put an unapproved app behind a public hostname.
+        """
+        record = self.store.project(project["id"])
+        artifact = json.loads(record["artifact"] or "null")
+        if not artifact:
+            raise ValueError("This project has no verified artifact to serve")
+        payload = json.loads(job["payload"] or "{}")
+        if payload.get("digest") and payload["digest"] != artifact["digest"]:
+            raise ValueError("Stale serve request: the artifact changed; reload and start again")
+
+        profile = self.settings.profiles[record["profile"]]
+        ok, reason = serving.servable(profile)
+        if not ok:
+            raise ValueError(reason)
+
+        project_id = project["id"]
+        previous = self._served.pop(project_id, None)
+        if previous is not None:
+            # Replacing a running app: stop the old process group first, or the port is lost
+            # and two apps answer on different ports with only one recorded.
+            try:
+                serving.stop(previous)
+            except Exception:
+                pass
+
+        self.store.event(project_id, job["id"], "serve.starting",
+                         {"job": artifact["job_id"], "digest": artifact["digest"]})
+        app = serving.start(self.settings, project_id, artifact["job_id"], profile, cancelled)
+        self._served[project_id] = app
+        self.store.record_served(project_id, artifact["job_id"], artifact["digest"],
+                                 app.port, "running", {"url": app.url})
+        self.store.set_served_state(project_id, "running", pid=app.process.pid)
+        self.store.event(project_id, job["id"], "serve.started",
+                         {"port": app.port, "url": app.url, "digest": artifact["digest"]})
+        return {"port": app.port, "url": app.url, "state": "running",
+                "digest": artifact["digest"], "job": artifact["job_id"]}
+
+    def stop_served(self, project_id):
+        """Stop a served app and free its record. Safe to call when nothing is running."""
+        app = self._served.pop(project_id, None)
+        if app is not None:
+            try:
+                serving.stop(app)
+            except Exception:
+                logger.warning("Served app for %s did not stop cleanly", project_id)
+        row = self.store.served(project_id)
+        if row is not None:
+            self.store.forget_served(project_id)
+        if app is not None or row is not None:
+            self.store.event(project_id, None, "serve.stopped", {})
+        return {"state": "stopped"}
+
+    def health_check_served(self):
+        """Ping every running app; restart one that died, once.
+
+        A crash at 03:00 is not paged here. Restarting once is worth doing because most
+        failures are transient, but a second failure marks the app unhealthy and stops
+        retrying rather than restarting in a loop nobody is watching.
+        """
+        import httpx
+        # A row deleted by `/stop` is how the API asks this lane to release a process: the
+        # process lives here, so the request has to be observed here. Killing it from the API
+        # would leave this dictionary holding a handle to something already dead.
+        rows = {row["project_id"]: row for row in self.store.served_apps()}
+        for project_id in list(self._served):
+            if project_id not in rows:
+                try:
+                    serving.stop(self._served.pop(project_id))
+                    self.store.event(project_id, None, "serve.stopped", {})
+                except Exception:
+                    logger.warning("Could not stop served app %s", project_id)
+        for row in rows.values():
+            if row["state"] != "running":
+                continue
+            app = self._served.get(row["project_id"])
+            if app is None:
+                # The process is gone with the scheduler that started it. A row claiming
+                # `running` with no handle is stale, not healthy.
+                self.store.set_served_state(row["project_id"], "unhealthy",
+                                            detail={"reason": "process handle lost"})
+                continue
+            url = app.url + self.settings.profiles[
+                self.store.project(row["project_id"])["profile"]].readiness_path
+            try:
+                with httpx.Client(trust_env=False, timeout=5) as client:
+                    healthy = client.get(url).status_code == 200
+            except Exception:
+                healthy = False
+            if healthy:
+                self.store.set_served_state(row["project_id"], "running")
+                continue
+            if row["restarts"] >= 1:
+                self.store.set_served_state(row["project_id"], "unhealthy",
+                                            detail={"reason": "still unhealthy after one restart"})
+                continue
+            record = self.store.project(row["project_id"])
+            profile = self.settings.profiles[record["profile"]]
+            artifact = json.loads(record["artifact"] or "null")
+            self.store.set_served_state(row["project_id"], "restarting", bump_restart=True)
+            self.store.event(row["project_id"], None, "serve.restarted", {})
+            try:
+                serving.stop(app)
+            except Exception:
+                pass
+            try:
+                fresh = serving.start(self.settings, row["project_id"], artifact["job_id"],
+                                      profile)
+            except Exception as exc:
+                self.store.set_served_state(row["project_id"], "unhealthy",
+                                            detail={"reason": type(exc).__name__})
+                self._served.pop(row["project_id"], None)
+                continue
+            self._served[row["project_id"]] = fresh
+            self.store.set_served_state(row["project_id"], "running", pid=fresh.process.pid,
+                                        detail={"url": fresh.url})
+
     def deploy(self, project, job, cancelled):
         payload = json.loads(job["payload"])
         target = self.settings.targets[project["id"] + ":" + payload["environment"]]
@@ -606,10 +734,26 @@ class Engine:
             self.store.recover(lane)
             signal.signal(signal.SIGTERM, lambda *_: self.stop.set())
             signal.signal(signal.SIGINT, lambda *_: self.stop.set())
+            health_due = 0.0
             while not self.stop.is_set():
                 self.store.heartbeat(lane=lane)
                 job = self.store.claim(lane)
                 if job:
                     self.process(job, lane)
-                else:
-                    self.stop.wait(1)
+                    continue
+                if lane == "serve" and time.monotonic() >= health_due:
+                    # Every 30s, and only in this lane: the build lane must not spend its time
+                    # probing apps, and this lane has nothing else to do while idle.
+                    health_due = time.monotonic() + 30
+                    try:
+                        self.health_check_served()
+                    except Exception:
+                        logger.warning("Health check of served apps failed", exc_info=True)
+                self.stop.wait(1)
+            if lane == "serve":
+                # Leave nothing running behind a scheduler that is exiting.
+                for project_id in list(self._served):
+                    try:
+                        self.stop_served(project_id)
+                    except Exception:
+                        logger.warning("Could not stop served app %s", project_id)
