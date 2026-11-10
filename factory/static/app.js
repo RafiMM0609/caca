@@ -20,6 +20,51 @@ $("close-create").onclick = () => $("create-dialog").close();
 $("create-form").onsubmit = event => { event.preventDefault(); action(async () => { const project = await api("/projects", { method: "POST", body: JSON.stringify({ name: $("name").value, brief: $("brief").value, profile: $("profile").value }) }); $("create-dialog").close(); $("create-form").reset(); current = project.id; revision = null; setView("detail"); }); };
 function overview() { current = null; revision = null; setView(token ? "workspace" : "login"); if (token) action(async () => {}); }
 $("back").onclick = overview; $("overview").onclick = overview;
+// Planner questions are answered in a form rather than by editing plan JSON: the operator is
+// not technical, and an answer has to reach the assumption record, every task instruction and
+// every test flow. Hand-editing made that the operator's job to remember, and forgetting the
+// test flows once failed a build whose application was correct.
+function renderQuestions(plan, active) {
+  const box = $("plan-questions");
+  if (!plan?.questions?.length) return;
+  box.append(el("h3", "Pertanyaan dari planner"));
+  box.append(el("p", "Jawab pertanyaan ini sebelum membangun. Jawaban otomatis masuk ke instruksi worker dan skenario pengujian.", "muted"));
+  const form = el("form");
+  form.className = "question-form";
+  for (const [index, question] of plan.questions.entries()) {
+    const field = el("div", undefined, "question");
+    const label = el("label", question);
+    label.htmlFor = "answer-" + index;
+    const input = el("textarea");
+    input.id = "answer-" + index;
+    input.rows = 2;
+    input.dataset.question = question;
+    input.placeholder = "Tulis jawaban di sini";
+    input.disabled = active;
+    field.append(label, input);
+    form.append(field);
+  }
+  const submit = el("button", "Simpan jawaban", "primary");
+  submit.type = "submit";
+  submit.disabled = active;
+  form.append(submit);
+  form.onsubmit = event => {
+    event.preventDefault();
+    const answers = {};
+    for (const field of form.querySelectorAll("textarea[data-question]")) {
+      const value = field.value.trim();
+      if (value) answers[field.dataset.question] = value;
+    }
+    if (!Object.keys(answers).length) { notify("Isi minimal satu jawaban.", true); return; }
+    action(async () => {
+      await api("/projects/" + current + "/answers", { method: "POST",
+        body: JSON.stringify({ revision: projectData.revision, answers }) });
+      notify("Jawaban tersimpan. Plan sudah diperbarui.");
+    });
+  };
+  box.append(form);
+}
+
 async function refresh() {
   if (!token || polling) return;
   polling = true;
@@ -65,7 +110,7 @@ function renderProject(project, events) {
   $("approve").disabled = active || !plan || plan.questions.length > 0 || !["awaiting_plan", "failed", "interrupted", "cancelled"].includes(project.state);
   $("plan-summary").textContent = plan ? plan.summary : "Ask the planner to turn this brief into an implementation plan, or save a reviewed plan below.";
   $("plan-questions").replaceChildren();
-  if (plan?.questions.length) $("plan-questions").append(el("div", "Resolve before approval: " + plan.questions.join(" · "), "notice"));
+  renderQuestions(plan, active);
   if (plan?.assumptions.length) $("plan-questions").append(el("p", "Assumptions: " + plan.assumptions.join(" · "), "muted"));
   $("tasks").replaceChildren();
   for (const task of plan?.tasks || []) { const item = el("div", undefined, "task"), criteria = el("ul"); for (const text of task.acceptance) criteria.append(el("li", text)); item.append(el("small", task.id), el("strong", task.title), criteria); $("tasks").append(item); }

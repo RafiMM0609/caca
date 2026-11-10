@@ -105,6 +105,28 @@ A browser case fails on an uncaught page exception or a console error. Console n
 
 Operator-owned checks run after the build and before testing. The active Nuxt profile runs `checks/secret_scan.py`, which blocks credential-shaped values and the exact values of configured secrets from appearing in a built artifact.
 
+## Answering planner questions
+
+A planner raises `questions` when the brief is underspecified, and approval is refused while any
+remain. The dashboard shows one text field per question; submitting applies each answer to four
+places at once:
+
+| Place | Why |
+| --- | --- |
+| `assumptions` | the record of what was decided and why |
+| every task's `instructions` | the worker builds to it |
+| every test flow's `goal` **and** `steps` | the tester asserts it |
+
+The last one is the one that matters. Hand-editing the JSON made mirroring the answer into test
+flows the operator's job to remember, and forgetting it once failed a build whose application
+was correct: the workers built the button, the tester never asserted it. One operation cannot
+forget.
+
+An answer is matched on the full question text. An unknown question is rejected as a stale page
+rather than silently dropped, a blank answer does not count, and unanswered questions stay in
+place so the plan remains unapprovable instead of being approved with a gap. A second round
+accumulates rather than replacing the first.
+
 ## Honest limits
 
 - Test quality still depends on the approved flows and assertions. Coverage validation is structural, not proof that every requirement is tested.
@@ -134,7 +156,7 @@ Primary capability references: [Nuxt Studio module](https://nuxt.com/modules/stu
 
 ## Executed validation result
 
-**2026-11-09 (current).** 259 Python tests passed, 3 skipped (164 collected); 15 JavaScript worker-state tests passed; ruff and `node --check` clean.
+**2026-11-09 (current).** 271 Python tests passed, 3 skipped (164 collected); 15 JavaScript worker-state tests passed; ruff and `node --check` clean.
 
 **2026-11-07 (before workers became parallel).** 58 Python tests passed, 2 Docker tests skipped; 8 JavaScript worker-state tests passed. The real dashboard journey passed: create project, initialize Nuxt starter, clean npm installation, build, 3 API/browser cases, embedded Studio field editing, review diff, apply revision 2, rebuild, and all 3 API/browser cases again, with the original artifact retained. Tester model responses were scripted test doubles.
 

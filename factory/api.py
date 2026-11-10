@@ -13,7 +13,10 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import Settings
 from .db import Conflict, Store
+from pydantic import Field
+
 from .models import DeployInput, Plan, ProjectInput, StrictModel
+from .answers import apply_answers
 from .workspace import snapshot
 from .studio import Studio
 
@@ -21,6 +24,12 @@ from .studio import Studio
 class PlanUpdate(StrictModel):
     revision: int
     plan: Plan
+
+
+class AnswersInput(StrictModel):
+    """Operator answers keyed by the question text, exactly as the planner wrote it."""
+    revision: int
+    answers: dict[str, str] = Field(min_length=1, max_length=30)
 
 
 def create_app(settings=None):
@@ -144,6 +153,42 @@ def create_app(settings=None):
             db.execute("UPDATE projects SET plan=?,revision=revision+1,state='awaiting_plan' WHERE id=?",
                        (payload.plan.model_dump_json(), project))
             store.event_tx(db, project, None, "plan.edited", {"revision": payload.revision + 1})
+        return store.project(project)
+
+    @app.post("/api/projects/{project}/answers")
+    def answer_questions(project: str, payload: AnswersInput, _=Depends(operator)):
+        """Resolve planner questions from the UI instead of hand-editing plan JSON.
+
+        Applying an answer in one operation is the point: it must reach the assumption record,
+        every task instruction and every test flow. An operator editing JSON had to remember
+        all three, and forgetting the test flows once failed a build whose application was
+        correct.
+        """
+        record = store.project(project)
+        if not record["plan"]:
+            raise HTTPException(404, "This project has no plan to answer")
+        plan = Plan.model_validate_json(record["plan"])
+        try:
+            updated = apply_answers(plan, payload.answers)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if updated == plan:
+            raise HTTPException(422, "No answers were applied; answer at least one question")
+        with store.tx() as db:
+            row = db.execute("SELECT revision FROM projects WHERE id=?", (project,)).fetchone()
+            if not row:
+                raise KeyError(project)
+            if row["revision"] != payload.revision:
+                raise Conflict("Plan revision changed; reload before answering")
+            if db.execute("SELECT 1 FROM jobs WHERE project_id=? AND state IN "
+                          "('running','queued')", (project,)).fetchone():
+                raise Conflict("Cannot edit plan while a job is active")
+            db.execute("UPDATE projects SET plan=?,revision=revision+1,state='awaiting_plan' "
+                       "WHERE id=?", (updated.model_dump_json(), project))
+            store.event_tx(db, project, None, "plan.answered",
+                           {"revision": payload.revision + 1,
+                            "answered": sorted(payload.answers),
+                            "remaining": updated.questions})
         return store.project(project)
 
     @app.post("/api/projects/{project}/approve", status_code=202)
