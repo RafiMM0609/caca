@@ -26,8 +26,15 @@ $("back").onclick = overview; $("overview").onclick = overview;
 // test flows once failed a build whose application was correct.
 function renderQuestions(plan, active) {
   const box = $("plan-questions");
-  if (!plan?.questions?.length) return;
-  box.append(el("h3", "Pertanyaan dari planner"));
+  if (!plan?.questions?.length) { box.replaceChildren(); return; }
+  // Drafts are read *before* clearing, because clear-then-read makes the collection always
+  // empty and every keystroke dies on the next 4s poll.
+  const draft = {};
+  box.querySelectorAll("textarea[data-question]").forEach(saved => {
+    const value = saved.value.trim();
+    if (value) draft[saved.dataset.question] = value;
+  });
+  box.replaceChildren();
   box.append(el("p", "Jawab pertanyaan ini sebelum membangun. Jawaban otomatis masuk ke instruksi worker dan skenario pengujian.", "muted"));
   const form = el("form");
   form.className = "question-form";
@@ -40,6 +47,7 @@ function renderQuestions(plan, active) {
     input.rows = 2;
     input.dataset.question = question;
     input.placeholder = "Tulis jawaban di sini";
+    if (draft[question]) { input.value = draft[question]; }
     input.disabled = active;
     field.append(label, input);
     form.append(field);
@@ -228,7 +236,6 @@ function renderProject(project, events) {
   $("generate").disabled = active || !status.model_configured || !status.pi_installed;
   $("approve").disabled = active || !plan || plan.questions.length > 0 || !["awaiting_plan", "failed", "interrupted", "cancelled"].includes(project.state);
   $("plan-summary").textContent = plan ? plan.summary : "Ask the planner to turn this brief into an implementation plan, or save a reviewed plan below.";
-  $("plan-questions").replaceChildren();
   renderQuestions(plan, active);
   if (plan?.assumptions.length) $("plan-questions").append(el("p", "Assumptions: " + plan.assumptions.join(" · "), "muted"));
   $("tasks").replaceChildren();
