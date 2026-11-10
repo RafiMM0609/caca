@@ -254,6 +254,22 @@ Checkpoint: 2026-11-08, after commit `5eb3318`. Read [origin and decisions](orig
   Verified in a browser against a live factory: edit, cancel, save, refresh, and a revision bump
   to 2 with instructions, flows and selectors intact.
 
+- **Serving a product needs no build: the verifier's output is already on disk** (2026-11-10).
+  What was thought to need `npm ci` + `npm run build` per app turns out to exist already:
+  `factory/verifier.py` copies `profile.artifact_dir` into the job's `output/` directory, so
+  `data/jobs/<job>/output/` is a runnable product. Measured: Enterprise 3.1 MB, Mini 11 MB,
+  Toko Roti 30 MB, and two of them were started standalone against a live Node process long
+  after their builds — `/api/health` answered `{"status":"ok"}` in both. It depends on the
+  bundled server dependencies inside `output/server/node_modules` (2.1-26 MB), not on any
+  `node_modules` beside the build.
+  Size is not a fixed 3 MB: the older build carries `better-sqlite3` prebuilds for three
+  platforms (2.0-2.4 MB each) because the brief named SQLite, so serving storage must be
+  estimated from the previous `output/`, not assumed.
+  Scope: a profile is servable only if it defines **both** `artifact_dir` and `serve_argv`.
+  `nuxt-studio` does; every project here is it. `node` has `artifact_dir` but no `serve_argv`;
+  `static` has neither and exports source via `FACTORY_OUTPUT` in Docker, not a runnable app.
+  Full plan in [plan-serve-lane.md](plan-serve-lane.md), ~1.5 days of work.
+
 ## Code map
 
 | Area | Main files |

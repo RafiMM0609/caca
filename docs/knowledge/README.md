@@ -6,7 +6,7 @@ This folder preserves the reasoning and project history that cannot be inferred 
 | --- | --- |
 | [Origin and decisions](origin-and-decisions.md) | Why the factory exists, which choices the owner made, and how scope evolved |
 | [Delivery plan](plan.md) | Gap analysis and the phased route from today to a dependable factory |
-| [Serve lane plan](plan-serve-lane.md) | Running a built product on this machine behind the existing tunnel |
+| [Serve lane plan](plan-serve-lane.md) | Running a built product on this machine behind the existing tunnel — reuses the verifier's kept build output |
 | [Inline plan editing plan](plan-edit-inline.md) | Editing a plan so a wrong feature can be fixed, without rebuilding the planner |
 | [Design skills plan](design-skills-plan.md) | Making worker output look deliberate rather than generic: what Pi can load, and where each check belongs |
 | [Handoff](handoff.md) | Current code map, last validation evidence, gaps and continuation checklist |
