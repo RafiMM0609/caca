@@ -21,13 +21,24 @@ def assistant_json(output: str) -> tuple[str, list[str]]:
         except ValueError:
             continue
         message = event.get("message")
-        if event.get("type") == "message_end" and isinstance(message, dict) and message.get("role") == "assistant":
+        if (event.get("type") == "message_end" and isinstance(message, dict)
+                and message.get("role") == "assistant"):
             blocks = [b for b in message.get("content", []) if isinstance(b, dict) and b.get("type") == "text"]
             text = "".join(b.get("text", "") for b in blocks).strip()
             if text:
                 text_parts.append(text)
-        elif "errorMessage" in event:
-            problems.append(str(event["errorMessage"])[:500])
+        # Checked on every event, not in an `else` branch: a failed turn still arrives as a
+        # `message_end` with empty content, so branching on the event type skipped the very
+        # events that carry the failure.
+        #
+        # Pi reports a provider failure *inside* `message`, not at the top level, and still exits
+        # 0. Looking only at `event["errorMessage"]` reduced an expired key to "Model returned no
+        # text", which is why the job error said "inspect task evidence" for a cause the provider
+        # had stated plainly.
+        failure = event.get("errorMessage") or (
+            message.get("errorMessage") if isinstance(message, dict) else None)
+        if failure:
+            problems.append(str(failure)[:500])
     return (text_parts[-1] if text_parts else ""), problems
 
 

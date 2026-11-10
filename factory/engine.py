@@ -10,7 +10,7 @@ import time
 from .agents import PiAgent
 from .db import Store, uid
 from .deploy import Deployer
-from . import serving
+from . import diagnosis, serving
 from .memory import Memory
 from .models import Plan, Review
 from .parallel import WORKER_BRIEF, ParallelBuilder
@@ -177,8 +177,18 @@ class Engine:
             store.finish(job_id, "cancelled", error="Cancelled; inspect deployment status if applicable")
         except Exception as exc:
             # No raw exception text: providers, SSH, or invalid model output may contain secrets.
-            logger.error("Job %s failed (%s)", job_id, type(exc).__name__)
-            store.finish(job_id, "failed", error=f"{type(exc).__name__}: execution failed; inspect task evidence and readiness")
+            # A known provider failure is named instead, because "inspect task evidence" told the
+            # operator nothing when the real cause was an expired key sitting in the output.
+            reason = diagnosis.describe(exc)
+            logger.error("Job %s failed (%s)%s", job_id, type(exc).__name__,
+                         ": " + reason if reason else "")
+            if reason:
+                store.event(project_id, job_id, "job.failure_explained", {"reason": reason})
+                store.finish(job_id, "failed", error=reason)
+            else:
+                store.finish(job_id, "failed",
+                             error=f"{type(exc).__name__}: execution failed; "
+                                   f"inspect task evidence and readiness")
         finally:
             done.set()
             pulse.join(timeout=5)
