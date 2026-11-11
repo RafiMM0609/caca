@@ -338,3 +338,66 @@ def test_an_unnormalisable_selector_label_is_still_rejected():
         AcceptanceFlow.model_validate({
             "id": "home", "kind": "browser", "goal": "A visitor sees the shop name.",
             "steps": ["Visit /"], "selectors": {"1bad": "#x"}})
+
+# --- js_typecheck check ---------------------------------------------------------------
+
+JS_TYPECHECK = ROOT / "checks" / "js_typecheck.py"
+
+
+def typecheck(tmp_path, files, *args, env=None):
+    root = tmp_path / "artifact"
+    root.mkdir(parents=True, exist_ok=True)
+    for name, content in files.items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    environ = {"PATH": "/usr/bin:/bin:/usr/local/bin", **(env or {})}
+    return subprocess.run([sys.executable, str(JS_TYPECHECK), *args, str(root)],
+                          capture_output=True, text=True, env=environ)
+
+
+def test_js_typecheck_skips_a_project_without_a_typecheck_script(tmp_path):
+    """A legacy project never declared the gate; it must still build."""
+    result = typecheck(tmp_path, {"package.json": json.dumps({"name": "legacy", "scripts": {"build": "vite build"}})})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "no typecheck script" in result.stdout
+    assert "skipped" in result.stdout
+
+
+def test_js_typecheck_requires_typecheck_when_the_profile_enforces_it(tmp_path):
+    result = typecheck(tmp_path, {"package.json": json.dumps({"name": "legacy"})}, "--require-typecheck")
+    assert result.returncode != 0
+    assert "no typecheck script" in result.stderr
+
+
+def test_js_typecheck_runs_the_declared_script_and_passes_it(tmp_path):
+    """The gate runs the project's own script, with the real node, never a stand-in."""
+    result = typecheck(tmp_path, {
+        "package.json": json.dumps({"name": "typed", "scripts": {"typecheck": "node ok.mjs"}}),
+        "ok.mjs": "console.log('typed clean');\n"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS" in result.stdout
+
+
+def test_js_typecheck_fails_when_the_declared_script_fails(tmp_path):
+    result = typecheck(tmp_path, {
+        "package.json": json.dumps({"name": "typed", "scripts": {"typecheck": "node broken.mjs"}}),
+        "broken.mjs": "console.error('index.vue(1,7): error TS2322');\nprocess.exit(1);\n"})
+    assert result.returncode == 1
+    assert "TYPECHECK FAILED" in result.stdout
+    assert "error TS2322" in result.stdout
+
+
+def test_js_typecheck_fails_loudly_without_package_json(tmp_path):
+    """An empty or mistyped artifact path is not a passing type gate."""
+    result = typecheck(tmp_path, {"index.html": "<h1>no package here</h1>"})
+    assert result.returncode != 0
+    assert "no package.json" in result.stderr
+
+
+def test_js_typecheck_does_not_pass_silently_without_npm(tmp_path, monkeypatch):
+    """A gate that cannot run must fail, never report a clean bill of health."""
+    result = typecheck(tmp_path, {"package.json": json.dumps({"name": "typed"})},
+                       env={"PATH": str(tmp_path / "empty-bin")})
+    assert result.returncode != 0
+    assert "npm/node are not on PATH" in result.stderr
