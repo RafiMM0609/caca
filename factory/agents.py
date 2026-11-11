@@ -42,6 +42,60 @@ def assistant_json(output: str) -> tuple[str, list[str]]:
     return (text_parts[-1] if text_parts else ""), problems
 
 
+TOKEN_KEYS = ("input", "output", "total", "cached", "prompt", "completion",
+              "input_tokens", "output_tokens", "total_tokens", "cache_read", "cache_write")
+
+
+def usage_from_transcript(output: str) -> dict:
+    """Best-effort metering data out of a Pi `--mode json` transcript, or {} when absent.
+
+    `PiWorker.run_task` hands back the raw JSON event stream, which may carry per-turn
+    usage alongside the messages. Whether a given provider reports it is not guaranteed,
+    so this is strictly read-only scavenging: only numbers under a `usage` key (top-level
+    or inside `message`) are collected, and any parse problem returns {} instead of
+    failing the worker that produced the transcript. Nothing is invented: an empty
+    result means the transcript carried no recognizable usage and the worker stays
+    unmetered beyond its reservation.
+    """
+    tokens: dict[str, float] = {}
+    cost = 0.0
+    try:
+        for line in output.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            message = event.get("message")
+            sources = [event] + ([message] if isinstance(message, dict) else [])
+            for source in sources:
+                usage = source.get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                inner = usage.get("tokens") if isinstance(usage.get("tokens"), dict) else usage
+                for key, value in inner.items():
+                    if key in TOKEN_KEYS and isinstance(value, (int, float)) \
+                            and not isinstance(value, bool):
+                        tokens[key] = tokens.get(key, 0) + value
+                reported = usage.get("cost")
+                if isinstance(reported, dict):
+                    reported = reported.get("total")
+                if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+                    cost += reported
+    except Exception:
+        return {}
+    found: dict = {}
+    if tokens:
+        found["tokens"] = {key: value for key, value in tokens.items() if value}
+    if cost:
+        found["cost_usd"] = round(cost, 6)
+    return found
+
+
 # Credentials are passed to the trusted model-worker process only. Generated applications never receive them.
 PROVIDER_ENV = (
     "ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY", "GEMINI_API_KEY",

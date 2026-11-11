@@ -114,8 +114,9 @@ def test_build_repairs_then_publishes_evidence(settings, store, project, plan):
     # One worker ran per repair attempt, and each attempt was reviewed.
     assert agent.calls.count("review") == 2
     assert workers[0]["state"] == "merged"
-    # Two reviewer calls at $2 each. Workers are harness processes, not budgeted JSON calls.
-    assert store.one("SELECT * FROM jobs WHERE id=?", (job["id"],))["reserved_usd"] == 4
+    # Two reviewer calls at $2 each, plus two harness worker runs at $0.25 each
+    # (FACTORY_WORKER_COST), all reserved against the same jobs.reserved_usd ledger.
+    assert store.one("SELECT * FROM jobs WHERE id=?", (job["id"],))["reserved_usd"] == 4.5
 
 
 def test_review_failure_never_produces_artifact(settings, store, project, plan):
@@ -127,9 +128,11 @@ def test_review_failure_never_produces_artifact(settings, store, project, plan):
 
 
 def test_budget_stops_reviews_and_blocks_publication(settings, store, project, plan):
-    """Two tasks need two reviews; a $2 job budget only pays for one.
+    """A $2 job budget cannot pay for both a worker run and a review.
 
-    The second review cannot be reserved, so the wave fails and nothing is published.
+    The first worker run reserves $0.25 (FACTORY_WORKER_COST), leaving $1.75 of the
+    ceiling; a review reserves $2, so no review fits. The reservation is refused, the
+    wave fails after bounded repair attempts and nothing is published.
     """
     settings.max_job_cost = 2
     from factory.models import Task
@@ -143,10 +146,14 @@ def test_budget_stops_reviews_and_blocks_publication(settings, store, project, p
         db.execute("UPDATE projects SET plan=? WHERE id=?", (plan.model_dump_json(), project["id"]))
     agent = ScriptedAgent(plan)
     build_job(store, project)
-    Engine(settings, store, agent, TestVerifier(), worker=ScriptedWorker()).process(store.claim())
-    assert agent.calls.count("review") == 1, "only one review fits the budget"
+    job = store.claim()
+    Engine(settings, store, agent, TestVerifier(), worker=ScriptedWorker()).process(job)
+    assert agent.calls.count("review") == 0, \
+        "no review fits once the worker run has taken its share of the ceiling"
     assert store.project(project["id"])["artifact"] is None
     assert store.project(project["id"])["state"] == "failed"
+    spent = store.one("SELECT * FROM jobs WHERE id=?", (job["id"],))["reserved_usd"]
+    assert spent <= settings.max_job_cost, "the ceiling is never exceeded"
 
 
 def test_verifier_failure_never_produces_release(settings, store, project, plan):

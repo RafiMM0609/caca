@@ -18,8 +18,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, wait
 
 from . import products
-from .agents import PiWorker, PiWorkerError
+from .agents import PiWorker, PiWorkerError, usage_from_transcript
 from .process import Cancelled
+
+
+class WorkerBudgetExhausted(ValueError):
+    """The job cannot pay for another harness-worker run under `FACTORY_MAX_JOB_COST`."""
+
 
 WORKER_BRIEF = (
     "You are a coding worker in a software factory. You own exactly one task and you work "
@@ -182,6 +187,23 @@ class ParallelBuilder:
                                          revision=project["revision"])
         worker_id = record["id"]
 
+        # Meter the harness worker before any model work starts. Engine.generate reserves
+        # per structured call; a worker run is the one model spend that was still
+        # admission-only, and it is often the most expensive stage of a build. The
+        # reservation is transactional (BEGIN IMMEDIATE), so the concurrent threads of a
+        # wave serialize and the job can never be pushed past its ceiling. A failure here
+        # is terminal for the attempt: the worker row is marked failed so the dashboard
+        # never shows a "running" worker that will never run, and the event names the
+        # knob the operator has to raise.
+        try:
+            self._reserve_worker_cost(project, job, task.id)
+        except WorkerBudgetExhausted as exc:
+            detail = {"error": type(exc).__name__, "message": str(exc)[:3000]}
+            store.set_worker(worker_id, state="failed", detail=detail)
+            store.event(project["id"], job["id"], "worker.budget_exhausted",
+                        {"task": task.id, "worker": worker_id, "message": str(exc)[:500]})
+            return WorkerOutcome(task.id, "failed", branch, base=base, detail=detail)
+
         # A retry starts from a clean branch so a failed attempt cannot poison the next one.
         # A stale worktree from an earlier job still holds the branch, so remove any
         # worktree attached to this branch before deleting it; otherwise git refuses to
@@ -213,6 +235,14 @@ class ParallelBuilder:
             changed = products.changed_files(worktree, base)
             detail = {"changed": changed, "transcript": transcript[-4000:],
                       "seconds": worker_seconds}
+            # Defensive metering: if the Pi JSON stream carried usage numbers, record
+            # them. `usage_from_transcript` returns {} when the transcript has none and
+            # never raises, so an unparsable transcript cannot fail a worker that ran.
+            usage = usage_from_transcript(transcript)
+            if usage:
+                detail["usage"] = usage
+                store.event(project["id"], job["id"], "worker.usage",
+                            {"task": task.id, "worker": worker_id, **usage})
 
             if review_for and changed:
                 diff = products.diff_against(worktree, base)
@@ -337,6 +367,34 @@ class ParallelBuilder:
             products.worktree_remove(root, fixer_wt)
 
     # -- helpers -----------------------------------------------------------------------
+
+    def _reserve_worker_cost(self, project, job, task_id):
+        """Reserve one harness-worker run against the job's cost ceiling.
+
+        Mirrors `Engine.generate`: read `jobs.reserved_usd` and add the reservation inside
+        the same `BEGIN IMMEDIATE` transaction, so the concurrent worker threads of a wave
+        serialize on SQLite and can never push the job past `settings.max_job_cost`. The
+        SQL lives here rather than in `factory/db.py` because metering policy is the
+        caller's decision, not a store primitive. `settings.worker_cost == 0` opts out.
+        """
+        cost = self.settings.worker_cost
+        if cost <= 0:
+            return
+        with self.store.tx() as db:
+            row = db.execute("SELECT reserved_usd FROM jobs WHERE id=?", (job["id"],)).fetchone()
+            if row is None:
+                # No job row to meter against. Real jobs always have one (Store.enqueue);
+                # only synthetic job dicts in tests bypass the store. Skipping rather than
+                # crashing keeps that path working unchanged.
+                return
+            if row[0] + cost > self.settings.max_job_cost:
+                raise WorkerBudgetExhausted(
+                    f"Job's reserved worker budget exhausted: one harness worker run "
+                    f"reserves ${cost:.2f} and ${row[0]:.2f} of the "
+                    f"${self.settings.max_job_cost:.2f} FACTORY_MAX_JOB_COST is already "
+                    f"spoken for. Raise FACTORY_MAX_JOB_COST, or set FACTORY_WORKER_COST=0 "
+                    f"to stop metering workers (task '{task_id}').")
+            db.execute("UPDATE jobs SET reserved_usd=reserved_usd+? WHERE id=?", (cost, job["id"]))
 
     def _branch(self, task_id):
         return f"worker/{task_id}"

@@ -17,6 +17,13 @@ class Settings:
     tester_model: str = ""
     max_cost: float = 2.0
     max_job_cost: float = 20.0
+    # Reserve per harness-worker run against the same `jobs.reserved_usd` ledger the
+    # structured calls use. Workers were the only unmetered model spend: each one is a
+    # full Pi session that may run many turns, so "budgets are admission-only" was not
+    # true for the most expensive stage of a build. $0.25 is a deliberately conservative
+    # placeholder per run, not a measured price; operators should tune it against their
+    # provider bills. 0 opts out and restores today's unmetered-worker behaviour.
+    worker_cost: float = 0.25
     agent_timeout: int = 600
     # A worker edits a tree, may run `npm ci` and a build to check its own work, and is then
     # reviewed. That is not one model call: 600s routinely expired mid-task. Separate from
@@ -52,6 +59,7 @@ class Settings:
             tester_model=os.environ.get("FACTORY_TESTER_MODEL", ""),
             max_cost=float(os.environ.get("FACTORY_MAX_COST", "2")),
             max_job_cost=float(os.environ.get("FACTORY_MAX_JOB_COST", "20")),
+            worker_cost=float(os.environ.get("FACTORY_WORKER_COST", "0.25")),
             agent_timeout=int(os.environ.get("FACTORY_AGENT_TIMEOUT", "600")),
             worker_timeout=int(os.environ.get("FACTORY_WORKER_TIMEOUT", "1800")),
             job_timeout=int(os.environ.get("FACTORY_JOB_TIMEOUT", "7200")),
@@ -111,6 +119,9 @@ class Settings:
             raise ValueError("Operator and release tokens must be distinct")
         if not 0 < self.max_cost <= 100 or not 10 <= self.agent_timeout <= 7200:
             raise ValueError("Invalid agent cost/time budget")
+        if self.worker_cost < 0:
+            raise ValueError("Worker cost must be zero or greater; FACTORY_WORKER_COST=0 "
+                             "stops metering harness workers")
         if not 60 <= self.job_timeout <= 86400:
             raise ValueError("Job timeout must be between 60s and 24h")
         if not self.job_timeout <= self.max_job_timeout <= 172800:
@@ -121,5 +132,6 @@ class Settings:
             raise ValueError("Worker concurrency must be between 1 and 16")
         if not self.max_cost <= self.max_job_cost <= 1000:
             raise ValueError("Job cost budget must cover at least one model invocation")
+        if self.worker_cost > self.max_job_cost:
+            raise ValueError("Job cost budget must cover at least one harness worker run")
         self.data.mkdir(parents=True, exist_ok=True, mode=0o700)
-

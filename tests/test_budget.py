@@ -5,12 +5,14 @@ with no defect to find, too large and a wedged job wastes hours. Waves drive the
 tasks inside a wave run concurrently.
 """
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from factory.config import Settings
-from factory.models import Plan, Profile, Review
+from factory.models import Plan, Profile, ProjectInput, Review
 
 
 def chain(n):
@@ -165,3 +167,185 @@ def test_worker_durations_survive_into_the_worker_row(settings, store, project, 
     assert rows, "a worker row is written"
     detail = json.loads(rows[0]["detail"] or "{}")
     assert "seconds" in detail, "a worker's duration is part of its evidence"
+
+
+# --- worker-run cost metering ---------------------------------------------------------
+# Harness workers were the one unmetered model spend. These tests keep the reservation
+# transactional: `ParallelBuilder` runs workers in threads, so a racy reservation could
+# silently exceed the job ceiling the operator set to survive on a small bill.
+
+
+def build_job(store, project):
+    return store.enqueue(project["id"], "build", {"revision": project["revision"]},
+                         allowed={"awaiting_plan"}, next_state="building")
+
+
+class FileWorker:
+    """A scripted harness worker: writes one file per task, records what it ran."""
+
+    def __init__(self, sleep=0.0):
+        self.sleep = sleep
+        self.ran = []
+        self.lock = threading.Lock()
+
+    def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                 skills=()):
+        marker = "YOUR TASK ("
+        task_id = instruction[instruction.index(marker) + len(marker):instruction.index(
+            ")", instruction.index(marker))]
+        with self.lock:
+            self.ran.append(task_id)
+        (Path(worktree) / f"{task_id}.txt").write_text(f"{task_id}\n")
+        time.sleep(self.sleep)
+        return "worker transcript"
+
+
+def flat_plan(n):
+    return Plan(summary="Independent parts.", assumptions=[], questions=[], tasks=[
+        {"id": f"t{i}", "title": f"Part {i}", "instructions": "Do this piece of work.",
+         "acceptance": ["works"], "depends_on": []} for i in range(n)], test_flows=[])
+
+
+def reserved_usd(store, job_id):
+    return store.one("SELECT reserved_usd FROM jobs WHERE id=?", (job_id,))["reserved_usd"]
+
+
+def test_a_worker_run_reserves_its_cost_against_the_job(settings, store, project):
+    """The reservation is visible in the same `jobs.reserved_usd` ledger the reviews use."""
+    from factory.parallel import ParallelBuilder
+
+    settings.worker_cost = 0.5
+    settings.max_job_cost = 10
+    job = build_job(store, project)
+    builder = ParallelBuilder(settings, store, worker=FileWorker())
+    builder.build_tasks(project, job, flat_plan(2),
+                        lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+
+    assert reserved_usd(store, job["id"]) == 1.0, "two workers at $0.50 each are metered"
+    rows = store.workers_for(job["id"])
+    assert len(rows) == 2
+    assert all(row["state"] == "merged" for row in rows)
+
+
+def test_concurrent_reservations_never_exceed_the_job_ceiling(settings, store, project):
+    """Four workers race on a budget that only pays for three; one must fail loudly.
+
+    The builder runs a wave in threads exactly as production does, so this exercises the
+    real `BEGIN IMMEDIATE` serialization rather than a mocked one.
+    """
+    from factory.parallel import ParallelBuilder
+
+    settings.worker_cost = 1.0
+    settings.max_job_cost = 3.0
+    settings.worker_concurrency = 4
+    job = build_job(store, project)
+    worker = FileWorker(sleep=0.1)
+    builder = ParallelBuilder(settings, store, worker=worker)
+    with pytest.raises(ValueError, match="failed after bounded repair attempts"):
+        builder.build_tasks(project, job, flat_plan(4),
+                            lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+
+    spent = reserved_usd(store, job["id"])
+    assert spent <= settings.max_job_cost, "metering must be exact under concurrency"
+    assert spent == 3.0, "three runs at $1.00 fit; nothing above the ceiling was charged"
+
+    failed = [row for row in store.workers_for(job["id"]) if row["state"] == "failed"]
+    assert len(failed) == 1, "exactly one run was refused"
+    detail = json.loads(failed[0]["detail"] or "{}")
+    assert "FACTORY_WORKER_COST" in detail.get("message", ""), \
+        "the error names the knob the operator has to raise"
+    assert failed[0]["task_id"] not in worker.ran, \
+        "a refused run must never start model work"
+    assert all(row["state"] != "running" for row in store.workers_for(job["id"])), \
+        "no worker may be left looking alive after its budget was refused"
+
+    kinds = [e["kind"] for e in store.all("SELECT kind FROM events WHERE job_id=?", (job["id"],))]
+    assert kinds.count("worker.budget_exhausted") >= 1, "the refusal is visible on the dashboard"
+
+
+def test_worker_cost_zero_disables_metering(settings, store, project):
+    """`FACTORY_WORKER_COST=0` opts out and restores today's unmetered behaviour."""
+    from factory.parallel import ParallelBuilder
+
+    settings.worker_cost = 0.0
+    settings.max_job_cost = 0.01
+    job = build_job(store, project)
+    builder = ParallelBuilder(settings, store, worker=FileWorker())
+    builder.build_tasks(project, job, flat_plan(2),
+                        lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+
+    assert reserved_usd(store, job["id"]) == 0, "no reservation is charged"
+    rows = store.workers_for(job["id"])
+    assert len(rows) == 2 and all(row["state"] == "merged" for row in rows), \
+        "workers run even when the ceiling is far below their real cost"
+
+
+def test_the_worker_cost_knob_reads_the_environment(tmp_path, monkeypatch):
+    monkeypatch.delenv("FACTORY_WORKER_COST", raising=False)
+    assert Settings.from_env().worker_cost == 0.25, "the documented default"
+
+    monkeypatch.setenv("FACTORY_WORKER_COST", "0.75")
+    assert Settings.from_env().worker_cost == 0.75
+
+
+def test_a_negative_worker_cost_is_rejected(tmp_path):
+    bad = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
+                   worker_cost=-0.01)
+    with pytest.raises(ValueError, match="Worker cost"):
+        bad.validate()
+
+
+def test_a_worker_cost_above_the_job_ceiling_is_rejected(tmp_path):
+    bad = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
+                   worker_cost=5.0, max_job_cost=2.0)
+    with pytest.raises(ValueError, match="at least one harness worker run"):
+        bad.validate()
+
+
+def test_usage_is_recorded_only_when_the_transcript_carries_it(settings, store, project):
+    """Scavenging usage from the transcript must never fail a worker."""
+    from factory.agents import usage_from_transcript
+    from factory.parallel import ParallelBuilder
+
+    class MeteredWorker(FileWorker):
+        def run_task(self, worktree, instruction, **kwargs):
+            super().run_task(worktree, instruction, **kwargs)
+            return json.dumps({"type": "message_end", "message": {"role": "assistant"},
+                               "usage": {"input": 1200, "output": 300,
+                                         "cost": {"total": 0.012}}}) + "\n"
+
+    class SilentWorker(FileWorker):
+        def run_task(self, worktree, instruction, **kwargs):
+            super().run_task(worktree, instruction, **kwargs)
+            return "plain text transcript, no json at all"
+
+    settings.worker_cost = 0.0
+    job = build_job(store, project)
+    ParallelBuilder(settings, store, worker=MeteredWorker()).build_tasks(
+        project, job, flat_plan(1), lambda task, ctx: f"YOUR TASK ({task.id}) do it",
+        lambda: False)
+    usage = [e for e in store.all("SELECT kind, detail FROM events WHERE job_id=? AND kind='worker.usage'",
+                                  (job["id"],))]
+    assert len(usage) == 1, "metering data the harness reported is recorded"
+    detail = json.loads(usage[0]["detail"])
+    assert detail["tokens"] == {"input": 1200, "output": 300}
+    assert detail["cost_usd"] == pytest.approx(0.012)
+
+    assert usage_from_transcript("garbage \x00 not json") == {}, \
+        "an unparsable transcript yields nothing rather than raising"
+
+    # A project holds one active job at a time, so the unmetered worker runs on a second
+    # project with the same single-task plan.
+    project2 = store.create_project(ProjectInput(name="Unmetered worker",
+                                                 brief="Create a portfolio with visible contact information."))
+    with store.tx() as db:
+        db.execute("UPDATE projects SET plan=?,revision=1,state='awaiting_plan' WHERE id=?",
+                   (flat_plan(1).model_dump_json(), project2["id"]))
+    project2 = store.project(project2["id"])  # the state and revision moved under us
+    job2 = build_job(store, project2)
+    ParallelBuilder(settings, store, worker=SilentWorker()).build_tasks(
+        project2, job2, flat_plan(1), lambda task, ctx: f"YOUR TASK ({task.id}) do it",
+        lambda: False)
+    silent = store.all("SELECT kind FROM events WHERE job_id=? AND kind='worker.usage'",
+                       (job2["id"],))
+    assert silent == [], "nothing is invented when the harness reports no usage"
