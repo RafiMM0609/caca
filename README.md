@@ -61,7 +61,7 @@ The dashboard integrates local Nuxt Studio drafts and an independent tester that
 - Memory is optional. `FACTORY_MEMORIX=/path/to/memorix` enables project-scoped MCP search/store. Memorix failure emits an event and does not replace SQLite task truth. Live interoperability is not yet verified.
 - `FACTORY_WORKER_CONCURRENCY` (default 3, max 16) bounds simultaneous workers. Each runs as its own process tree and applies the timeout `FACTORY_AGENT_TIMEOUT`.
 - Context passed to a **reviewer** is a bounded diff (200 KB) rather than the whole tree. The 300 KB text limit and 2 MB source limit still govern source snapshots served to the dashboard.
-- Model-call reservations default to $2 per invocation and $20 per job. Only planning, review and test preparation consume the budget — harness workers are not metered per call. `FACTORY_MAX_COST` and `FACTORY_MAX_JOB_COST` configure these. They are admission budgets, not guaranteed billing ceilings.
+- Model-call reservations default to $2 per invocation and $20 per job, and every harness worker run now reserves `FACTORY_WORKER_COST` (default $0.25, `0` opts out) against the same job ceiling, so a wave of workers cannot spend past `FACTORY_MAX_JOB_COST`. Reservations are ceilings, not metered bills.
 - The same reviewed artifact digest must pass staging before production. Lost SSH outcomes become `unknown` and block retries until reconciled.
 - No automatic database migration or rollback is performed on generated applications.
 - Legacy deployment code remains, but the dashboard hides deployment controls and the local examples have no targets. Do not activate deployment as part of ordinary build or editor work.

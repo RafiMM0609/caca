@@ -69,7 +69,7 @@ Two data directories exist and they are not interchangeable. **Verification** ge
 
 The default stack for a new product is a local SQLite file, and the planner and worker briefs say so explicitly. An external database is chosen only when the brief names one (Supabase, Postgres, MySQL, or any hosted database with a hostname and password). The Docker verification profile has no persistent mount, so treat persistence as a native-runner capability.
 
-The shipped checks are `checks/secret_scan.py` and `checks/js_syntax.py`.
+The shipped checks are `checks/secret_scan.py`, `checks/js_syntax.py` and `checks/js_typecheck.py`.
 
 - **`secret_scan.py <artifact_dir>`** blocks credential-shaped strings and the exact values of
   configured secrets from appearing in the built artifact. It is a pattern and exact-value scan over
@@ -91,6 +91,14 @@ The shipped checks are `checks/secret_scan.py` and `checks/js_syntax.py`.
   PASS would be a false clearance. Pass `--allow-empty` in a profile whose artifact legitimately
   ships no JavaScript. If `node` is not on PATH both the check and the build fail loudly rather
   than clearing the artifact.
+- **`js_typecheck.py [--require-typecheck] <checkout>`** runs the application's own
+  declared typecheck — `npm run typecheck` as an argv array in the tree — so an app can no
+  longer ship because it *builds* while carrying type errors. A `typecheck` script is
+  opt-in by the application: without one the check exits 0 but prints a visible
+  "SKIP: no typecheck script" note, and with `--require-typecheck` it fails instead, for
+  profiles that want to enforce it. Missing `npm`/`node` or an unreadable `package.json`
+  fail loudly, same rule as `js_syntax`. The pinned Nuxt starter now ships
+  `vue-tsc --noEmit` as its `typecheck` script, so starter-derived apps are gated by default.
 
 `factory doctor` prints the resolved `checks_dir`, whether it exists, and the exact `checks_argv`
 for each profile, so what will run is visible before a build instead of being discovered in the
@@ -141,7 +149,7 @@ stage is visible without reconstructing it from timestamps.
 ## Concurrency and resource bounds
 
 - `FACTORY_WORKER_CONCURRENCY` (default 3, max 16) bounds how many Pi harness workers run at once. Each is its own process tree with its own worktree and temporary `HOME`.
-- Because workers are real model calls, raising this multiplies provider spend and local CPU/RAM. Harness workers are **not** metered by the per-call budget; only planner, review and tester-preparation calls are.
+- Every harness worker run reserves `FACTORY_WORKER_COST` (default 0.25, `0` disables metering) against `jobs.reserved_usd` before it starts, transactionally, so concurrent workers cannot collectively exceed `FACTORY_MAX_JOB_COST`. A run whose reservation would breach the ceiling fails loudly with a terminal worker row and a `worker.budget_exhausted` event. Raising concurrency therefore multiplies provider spend **and** consumes the job budget faster.
 - `FACTORY_AGENT_TIMEOUT` applies per worker. A fixer spawned by a merge conflict is also a full worker run; give it enough time (the default 600s) when conflicts are expected.
 - One build scheduler and one deploy scheduler, each holding a flock. Do not run two build schedulers against the same data path.
 
@@ -222,6 +230,8 @@ owned by this repository.
 **Limits, stated:** one machine serves the factory and every product, so a product that eats RAM
 starves the factory; execution is native rather than sandboxed; and a served app is the artifact
 that passed at build time, not a continuously verified one.
+
+On a small host, size the factory deliberately. The 2 GB / 2 vCPU machine that recorded the live builds runs `FACTORY_WORKER_CONCURRENCY=1` (the default 3 assumes more memory: two concurrent Node builds do not fit in 2 GiB) and both shipped profiles pass `NODE_OPTIONS=--max-old-space-size=1024` so a Nuxt build's V8 heap is bounded instead of greedy. The job deadline scales with the configured concurrency, so lowering it lengthens the deadline automatically. Bump swap rather than RAM first only as a safety net; a build that thrashes swap is slower but finishes, while an OOM kill leaves an interrupted job to reconcile.
 
 ## Client attribution and hand-off
 

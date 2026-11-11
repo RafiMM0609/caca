@@ -27,8 +27,16 @@
           "{checks}/js_syntax.py",
           "--allow-empty",
           "dist"
+        ],
+        [
+          "python3",
+          "{checks}/js_typecheck.py",
+          "."
         ]
-      ]
+      ],
+      "env": {
+        "NODE_OPTIONS": "--max-old-space-size=1024"
+      }
     }
   },
   "targets": {}

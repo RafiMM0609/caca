@@ -34,11 +34,17 @@
           "python3",
           "{checks}/ui_lint.py",
           "."
+        ],
+        [
+          "python3",
+          "{checks}/js_typecheck.py",
+          "."
         ]
       ],
       "env": {
         "DATABASE_URL": "file:{data}/app.db",
-        "DATA_DIR": "{data}"
+        "DATA_DIR": "{data}",
+        "NODE_OPTIONS": "--max-old-space-size=1024"
       }
     }
   },

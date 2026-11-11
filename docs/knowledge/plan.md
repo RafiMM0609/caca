@@ -190,16 +190,29 @@ kept because tests use them to inspect outcomes, not because they are the resume
     browser request. Names and values are validated, because a newline would permit header
     injection into an outbound request. Proven live against a server that gates a page and an
     endpoint on a bearer token: the case passes with the header and fails without it.
-15. Lint and TypeScript typecheck in the validation profile. **Still deferred.** The starter
-    ships neither `typescript` nor `vue-tsc`, so adding typecheck means regenerating a lockfile
-    that was validated end-to-end; the risk is not worth it without a reason to own it. Lint is
-    available through `checks_argv` and is not wired into a shipped profile.
-16. `client_id`, per-client archiving and a product export path. **Partly done:** `client_id`
-    is recorded on the project and in the audit trail, and `GET /api/projects/<id>/export`
-    returns a git bundle that clones with full history, recorded as `project.exported`.
-    **Per-client archiving is still not implemented** — deleting everything belonging to one
-    client still needs manual work — and there is still no authorization boundary between
-    clients, because there is one operator and clients do not log in.
+15. Lint and TypeScript typecheck in the validation profile. **Done 2026-11-11.** The pinned
+    starter now ships `typescript` ^5.9.3 and `vue-tsc` ^3.3.14 as devDependencies plus a
+    `typecheck: vue-tsc --noEmit` script and the root `tsconfig.json` it needs (the starter had
+    none, which made `vue-tsc` fall back to plain tsc and print help); the lockfile was
+    regenerated additively with the existing pins untouched, and the starter typechecks clean in
+    a scratch copy (non-vacuously: an injected type error in `.ts` and in a `.vue` SFC was
+    caught). The gate is a new operator check, `checks/js_typecheck.py`, wired into both shipped
+    profiles' `checks_argv`: it runs the app's own `npm run typecheck`, skips with a visible note
+    when the app declares none, and enforces via `--require-typecheck` when a profile wants it.
+    Lint itself remains available through `checks_argv` and is still not wired into a shipped
+    profile.
+16. `client_id`, per-client archiving and a product export path. **Partly done; archiving
+    closed 2026-11-11.** `client_id` is recorded on the project and in the audit trail, and
+    `GET /api/projects/<id>/export` returns a git bundle that clones with full history. Now
+    `GET /api/clients/<id>/inventory` lists every project of one client (with whether it has a
+    repository) and `GET /api/clients/<id>/archive` ships one tarball of every project's
+    cloneable bundle plus a manifest that names a project without a repository instead of
+    silently omitting it; an oversized repository fails the whole request loudly. Recorded as
+    `client.archived`. Deleting a client's products is still deliberately manual — the inventory
+    makes it mechanical, but retention rules say artifacts referenced by active releases or
+    investigations must not be removed, so deletion stays an operator decision. There is still
+    no authorization boundary between clients, because there is one operator and clients do not
+    log in.
 
 ### Phase 5 — Deferred
 
