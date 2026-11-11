@@ -30,6 +30,13 @@ class Settings:
     # `agent_timeout` so the cheap structured calls stay tightly bounded while a harness
     # worker gets the time its job needs.
     worker_timeout: int = 1800
+    # A task that carries a vendored skill is doing design work, and design work is a loop:
+    # build, look at the page, adjust, build again. Measured on the Toko Roti rebuild, the
+    # worker spent most of a 30-minute attempt taking screenshots at three viewports and
+    # revising CSS, and the flat 1800s bound cut it off mid-iteration; the same task finished
+    # in 585s once it was allowed to complete. The longer clock applies only to tasks that
+    # declare skills, so an API-only task keeps the tighter bound it has no reason to exceed.
+    skill_worker_timeout: int = 3600
     # Wall-clock ceiling for one job. `agent_timeout` bounds a single model invocation; a
     # build is four workers in waves plus a build, acceptance tests and a repair loop, so the
     # two cannot share a number. 15 minutes was a measured Phase 0 build; two hours leaves
@@ -62,6 +69,7 @@ class Settings:
             worker_cost=float(os.environ.get("FACTORY_WORKER_COST", "0.25")),
             agent_timeout=int(os.environ.get("FACTORY_AGENT_TIMEOUT", "600")),
             worker_timeout=int(os.environ.get("FACTORY_WORKER_TIMEOUT", "1800")),
+            skill_worker_timeout=int(os.environ.get("FACTORY_SKILL_WORKER_TIMEOUT", "3600")),
             job_timeout=int(os.environ.get("FACTORY_JOB_TIMEOUT", "7200")),
             max_job_timeout=int(os.environ.get("FACTORY_MAX_JOB_TIMEOUT", "21600")),
             memorix=os.environ.get("FACTORY_MEMORIX", ""),
@@ -128,6 +136,13 @@ class Settings:
             raise ValueError("Max job timeout must be at least the job timeout and at most 48h")
         if not 30 <= self.worker_timeout <= 14400:
             raise ValueError("Worker timeout must be between 30s and 4h")
+        # A skill task may take longer than a plain one, but never longer than the job that
+        # contains it: a worker that outlives its job is killed by a different clock and the
+        # operator sees an unexplained failure instead of a worker deadline.
+        if not self.worker_timeout <= self.skill_worker_timeout <= 14400:
+            raise ValueError("Skill worker timeout must be at least the worker timeout and at most 4h")
+        if self.skill_worker_timeout > self.job_timeout:
+            raise ValueError("Skill worker timeout must not exceed the job timeout")
         if not 1 <= self.worker_concurrency <= 16:
             raise ValueError("Worker concurrency must be between 1 and 16")
         if not self.max_cost <= self.max_job_cost <= 1000:

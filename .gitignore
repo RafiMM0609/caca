@@ -9,4 +9,10 @@ data/
 *.log
 dist/
 .coverage
+# Runtime state a vendored skill writes beside its own SKILL.md. `design-taste-frontend` creates
+# .taste-skill/build.json when a worker arms its finish gate; that is per-build scratch, not part
+# of the vendored copy, and committing it would make the pin in VENDORED.md describe something
+# the upstream repository does not contain.
+skills/**/.taste-skill/
+skills/**/.taste-pro/
 

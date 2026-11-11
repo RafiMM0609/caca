@@ -118,8 +118,14 @@ Three bounds, each for a different unit of work, because one number cannot serve
 | --- | --- | --- |
 | `FACTORY_AGENT_TIMEOUT` | 600s | one tool-free structured call (planner, tester preparation, review) |
 | `FACTORY_WORKER_TIMEOUT` | 1800s | one Pi harness worker, which may edit a tree and build it |
+| `FACTORY_SKILL_WORKER_TIMEOUT` | 3600s | the same, for a task that declares a vendored design skill |
 | `FACTORY_JOB_TIMEOUT` | 7200s | **floor** for a whole job |
 | `FACTORY_MAX_JOB_TIMEOUT` | 21600s | hard cap for the scaled estimate |
+
+A task that carries a skill gets the longer clock because design work is a loop — build, look at
+the page, adjust — and a flat bound cut that loop off mid-iteration. See
+[worker wall-clock](knowledge/worker-wall-clock.md) for the measurement. A task without skills
+keeps the tighter bound it has no reason to exceed.
 
 `profile.timeout` (default 900s) bounds one verification pass: the build, the operator checks
 and every acceptance case. `profile.qa_timeout` (default 120s) is **per acceptance case**, not
@@ -151,6 +157,8 @@ stage is visible without reconstructing it from timestamps.
 ## Concurrency and resource bounds
 
 - Every harness run — an implementation worker, a conflict fixer and a repair worker — is bounded by `FACTORY_WORKER_TIMEOUT` (default 1800s), not by `FACTORY_AGENT_TIMEOUT` (600s, which bounds the cheap tool-free JSON calls). A run that hits its deadline is reported with the limit it hit and the knob to raise, and it may leave uncommitted edits in the product repository: inspect `git status` there before retrying.
+- An implementation worker whose task declares a vendored skill is bounded by `FACTORY_SKILL_WORKER_TIMEOUT` (default 3600s) instead, because design work is a build-look-adjust loop. A worker that fails without a review verdict — a deadline, a crash — now carries a note into the next attempt, so it does not restart with a prompt identical to the one that just failed.
+- A worker can launch a browser: `PLAYWRIGHT_BROWSERS_PATH` points at the shared Playwright directory when it exists, so a design task inspects its own page instead of installing a second browser. `HOME` stays per-worker and `~/.ssh` stays unreachable; only that one path is added. `FACTORY_PLAYWRIGHT_BROWSERS` overrides the location.
 - `FACTORY_WORKER_CONCURRENCY` (default 3, max 16) bounds how many Pi harness workers run at once. Each is its own process tree with its own worktree and temporary `HOME`.
 - Every harness worker run reserves `FACTORY_WORKER_COST` (default 0.25, `0` disables metering) against `jobs.reserved_usd` before it starts, transactionally, so concurrent workers cannot collectively exceed `FACTORY_MAX_JOB_COST`. A run whose reservation would breach the ceiling fails loudly with a terminal worker row and a `worker.budget_exhausted` event. Raising concurrency therefore multiplies provider spend **and** consumes the job budget faster.
 - `FACTORY_AGENT_TIMEOUT` applies per worker. A fixer spawned by a merge conflict is also a full worker run; give it enough time (the default 600s) when conflicts are expected.

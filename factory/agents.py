@@ -172,6 +172,34 @@ WITHHELD = ("FACTORY_OPERATOR_TOKEN", "FACTORY_RELEASE_TOKEN", "GIT_AUTHOR_NAME"
             "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
 
 
+def _playwright_browsers_path() -> str:
+    """The shared Playwright browser directory, or "" when this host has none.
+
+    The tester already needs a browser, so the same download can serve a worker that wants to
+    look at its own page. Returned only when it exists and contains at least one browser, so
+    the worker is never handed a path that leads nowhere.
+
+    `FACTORY_PLAYWRIGHT_BROWSERS` overrides the location, matching how `FACTORY_CHROMIUM`
+    already lets an operator point the tester at a specific binary.
+    """
+    configured = os.environ.get("FACTORY_PLAYWRIGHT_BROWSERS")
+    if configured:
+        candidate = Path(configured)
+    else:
+        home = os.environ.get("HOME")
+        if not home:
+            return ""
+        candidate = Path(home) / ".cache" / "ms-playwright"
+    try:
+        if not candidate.is_dir():
+            return ""
+        if not any(child.is_dir() for child in candidate.iterdir()):
+            return ""
+    except OSError:
+        return ""
+    return str(candidate)
+
+
 class PiWorkerError(RuntimeError):
     def __init__(self, message, output=""):
         super().__init__(message)
@@ -212,6 +240,19 @@ class PiWorker:
         env["NPM_CONFIG_UPDATE_NOTIFIER"] = "false"
         for name in WITHHELD:
             env.pop(name, None)
+        # A worker that wants to look at the page it just built had no browser it could see:
+        # `HOME` is isolated (deliberately -- it hides ~/.ssh and the operator's git identity),
+        # so Playwright's cache was invisible and the worker installed a second browser into
+        # /tmp on every attempt. Measured on the Toko Roti rebuild, that install plus the
+        # screenshot loop was most of a 30-minute attempt.
+        #
+        # Pointing at the browser directory keeps the isolation intact: the variable names one
+        # path of browser binaries, not the operator's home, so ~/.ssh stays unreachable. Set
+        # only when the directory exists, so a host without browsers does not get a variable
+        # that sends the worker looking at a missing path.
+        browsers = _playwright_browsers_path()
+        if browsers:
+            env["PLAYWRIGHT_BROWSERS_PATH"] = browsers
         return env
 
     @staticmethod

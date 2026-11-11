@@ -54,6 +54,31 @@ class WorkerOutcome:
                 "commit": self.commit, "detail": self.detail}
 
 
+def _failure_note(outcome):
+    """One line for a retry that failed without a review verdict.
+
+    The next attempt reads this in `PREVIOUS ATTEMPT FEEDBACK`, so it has to say what went
+    wrong and what to do differently, not just restate the error class. A deadline is the case
+    that motivated it: the worker had been iterating on a design, and the useful instruction is
+    to keep the result it already reached instead of exploring again from nothing.
+    """
+    detail = outcome.detail or {}
+    error = str(detail.get("error") or "Unknown failure")
+    message = " ".join(str(detail.get("message") or "").split())
+    note = f"The previous attempt did not produce a reviewable result ({error}"
+    note += f": {message[:300]}" if message else ""
+    note += "). "
+    if "deadline" in message.lower() or "timeout" in message.lower():
+        note += ("That attempt ran out of wall-clock time while still working. Write the "
+                 "complete files first, then verify. Do not repeat exploratory passes you "
+                 "have already completed; a build-and-look cycle you already ran does not "
+                 "need to run again.")
+    else:
+        note += ("Fix the cause before changing anything else, and leave the worktree in a "
+                 "state that can be reviewed on its own.")
+    return note
+
+
 class ParallelBuilder:
     """Drives waves of Pi workers and merges each finished wave into the product branch."""
 
@@ -126,7 +151,18 @@ class ParallelBuilder:
                     attempts[outcome.task_id] = attempts.get(outcome.task_id, 0) + 1
                     reported = (outcome.detail or {}).get("review", {}).get("findings") or []
                     if reported:
+                        # A reviewer's finding is specific and actionable, so it wins over
+                        # the generic line below.
                         findings[outcome.task_id] = list(reported)[:10]
+                    else:
+                        # A failure that was not a review -- a deadline, a crash, an OSError --
+                        # used to reach the next attempt as an empty list, so the worker
+                        # restarted with a prompt identical to the one that just failed. That
+                        # is the same defect the review path already fixed, in the one branch
+                        # nobody had written. Measured on the Toko Roti rebuild: attempt 1 hit
+                        # the deadline, attempt 2 began blind and re-explored the whole design,
+                        # and the reviewer then rejected it for work attempt 1 had not finished.
+                        findings[outcome.task_id] = [_failure_note(outcome)]
                 store.event(project["id"], job["id"], "wave.retry",
                             {"tasks": sorted(o.task_id for o in failed),
                              "feedback": {o.task_id: findings.get(o.task_id, [])
@@ -226,8 +262,15 @@ class ParallelBuilder:
                                                   "attempt": prior_attempts + 1,
                                                   "feedback": "\n".join(prior_findings or [])})
             worker_started = time.monotonic()
+            # A task that carries a skill is doing design work, which is a loop of build,
+            # look, adjust. The flat bound cut that loop off mid-iteration and the worker
+            # then restarted blind; a task with no skill has no such loop and keeps the
+            # tighter clock. `task.skills` is the signal because declaring a skill is exactly
+            # what makes the task visual.
+            timeout = (self.settings.skill_worker_timeout if task.skills
+                       else self.settings.worker_timeout)
             transcript = self.worker.run_task(worktree, instruction,
-                                             timeout=self.settings.worker_timeout,
+                                             timeout=timeout,
                                              cancelled=cancelled,
                                              skills=task.skills)
             worker_seconds = round(time.monotonic() - worker_started, 1)
