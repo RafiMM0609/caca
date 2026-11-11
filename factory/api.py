@@ -3,6 +3,7 @@ import hmac
 import re
 import json
 import shutil
+import tarfile
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -373,6 +374,87 @@ def create_app(settings=None):
         return FileResponse(destination,
                             filename=f"{label}-{record['name'][:40].replace(' ', '-')}.bundle",
                             media_type="application/octet-stream")
+
+    # Client attribution is a label, not a login: these endpoints are operator-only, and
+    # everything they return is what the single-project export already returns, just for
+    # every project of one client at once.
+    CLIENT_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,79}$")
+
+    @app.get("/api/clients/{client_id}/inventory")
+    def client_inventory(client_id: str, _=Depends(operator)):
+        """Everything attributed to one client, so retirement is mechanical, not manual."""
+        from . import products as product_repo
+
+        if not CLIENT_ID.fullmatch(client_id):
+            raise HTTPException(422, "Invalid client id")
+        rows = store.client_projects(client_id)
+        if not rows:
+            raise HTTPException(404, "No product is attributed to this client")
+        projects = []
+        for row in rows:
+            root = product_repo.product_root(settings.data, row["id"])
+            projects.append({"project": row["id"], "name": row["name"],
+                             "profile": row["profile"], "state": row["state"],
+                             "revision": row["revision"], "created": row["created"],
+                             "repository": root.is_dir()})
+        return {"client_id": client_id, "projects": projects}
+
+    @app.get("/api/clients/{client_id}/archive")
+    def client_archive(client_id: str, _=Depends(operator)):
+        """Download every product of one client, history included, as one archive.
+
+        Each project ships the same cloneable git bundle the single-project export ships,
+        plus a manifest naming what is inside and what is absent. A project that has never
+        built has no repository, so its manifest entry says so instead of vanishing: an
+        archive that silently omits a project would be read as a complete hand-off.
+        An oversized repository fails the whole request loudly, for the same reason.
+        """
+        from . import products as product_repo
+
+        if not CLIENT_ID.fullmatch(client_id):
+            raise HTTPException(422, "Invalid client id")
+        rows = store.client_projects(client_id)
+        if not rows:
+            raise HTTPException(404, "No product is attributed to this client")
+        exports = settings.data / "exports"
+        exports.mkdir(parents=True, exist_ok=True, mode=0o700)
+        archive_path = exports / f"client-{client_id}.tar.gz"
+        if archive_path.exists():
+            archive_path.unlink()
+        entries = []
+        try:
+            for row in rows:
+                entry = {"project": row["id"], "name": row["name"], "state": row["state"],
+                         "revision": row["revision"], "bundle": None}
+                root = product_repo.product_root(settings.data, row["id"])
+                if root.is_dir():
+                    destination = exports / f"{row['id']}.bundle"
+                    receipt = product_repo.bundle_repository(root, destination)
+                    entry["bundle"] = {**receipt, "branches": product_repo.bundle_heads(root)}
+                entries.append(entry)
+        except product_repo.GitError as exc:
+            archive_path.unlink(missing_ok=True)
+            raise HTTPException(500, f"Could not bundle a repository for this client: "
+                                     f"{str(exc)[:200]}") from exc
+        manifest = {"client_id": client_id, "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "projects": entries}
+        manifest_path = exports / f"client-{client_id}-manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        try:
+            with tarfile.open(archive_path, "w:gz") as tar:
+                tar.add(manifest_path, arcname=f"client-{client_id}/manifest.json")
+                for entry in entries:
+                    if entry["bundle"] is None:
+                        continue
+                    tar.add(exports / f"{entry['project']}.bundle",
+                            arcname=f"client-{client_id}/{entry['project']}.bundle")
+        finally:
+            manifest_path.unlink(missing_ok=True)
+        store.event(rows[0]["id"], None, "client.archived",
+                    {"client_id": client_id, "projects": [e["project"] for e in entries],
+                     "bytes": archive_path.stat().st_size})
+        return FileResponse(archive_path, filename=f"{client_id}-archive.tar.gz",
+                            media_type="application/gzip")
 
     static = Path(__file__).parent / "static"
     app.mount("/assets", StaticFiles(directory=static), name="assets")

@@ -152,6 +152,16 @@ class Store:
     def project(self, project):
         return self.one("SELECT * FROM projects WHERE id=?", (project,))
 
+    def client_projects(self, client_id):
+        """Every project attributed to one client, oldest first.
+
+        Client attribution is a label, not an authorization boundary (there is one operator
+        and clients do not log in). Its operational use is bulk hand-off and retirement: to
+        give one client everything that is theirs, or to find everything that must be
+        removed when a relationship ends, without walking the project list by hand.
+        """
+        return self.all("SELECT * FROM projects WHERE client_id=? ORDER BY created", (client_id,))
+
     def enqueue(self, project, kind, payload=None, allowed=None, next_state=None):
         job = uid()
         try:
