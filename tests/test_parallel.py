@@ -306,3 +306,30 @@ def test_a_merged_worktree_is_removed_from_disk(settings, store, project, plan):
     rows = store.workers_for("cleanup-job")
     assert rows and all(r["state"] == "merged" for r in rows), \
         "the merge must still be recorded even though the directory is gone"
+
+
+def test_every_harness_run_receives_the_worker_budget(env):
+    """A fixer edits code and rebuilds, so it needs the worker budget too.
+
+    The same defect as the repair worker: `_spawn_fixer` called `run_task` with no `timeout`,
+    inheriting the 600s one-shot-call budget instead of `worker_timeout`.
+    """
+    plan = Plan(summary="Two parts that both edit the same file.", tasks=[task("one"), task("two")])
+    settings, store, project = env
+    seen = []
+
+    class Recorder(FakeWorker):
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                     skills=()):
+            seen.append(("fixer" if "Integration conflict" in instruction else "task", timeout))
+            return super().run_task(worktree, instruction, model=model, timeout=timeout,
+                                    cancelled=cancelled, skills=skills)
+
+    builder = ParallelBuilder(settings, store, worker=Recorder(shared_file=True))
+    builder.build_tasks(project, {"id": "job-1", "payload": "{}"}, plan,
+                        lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+
+    fixers = [timeout for role, timeout in seen if role == "fixer"]
+    assert fixers, "this plan must have exercised the fixer, otherwise the test proves nothing"
+    assert all(timeout == settings.worker_timeout for timeout in fixers), (
+        f"fixer runs must use worker_timeout={settings.worker_timeout}, got {fixers}")

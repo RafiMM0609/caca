@@ -150,6 +150,7 @@ stage is visible without reconstructing it from timestamps.
 
 ## Concurrency and resource bounds
 
+- Every harness run — an implementation worker, a conflict fixer and a repair worker — is bounded by `FACTORY_WORKER_TIMEOUT` (default 1800s), not by `FACTORY_AGENT_TIMEOUT` (600s, which bounds the cheap tool-free JSON calls). A run that hits its deadline is reported with the limit it hit and the knob to raise, and it may leave uncommitted edits in the product repository: inspect `git status` there before retrying.
 - `FACTORY_WORKER_CONCURRENCY` (default 3, max 16) bounds how many Pi harness workers run at once. Each is its own process tree with its own worktree and temporary `HOME`.
 - Every harness worker run reserves `FACTORY_WORKER_COST` (default 0.25, `0` disables metering) against `jobs.reserved_usd` before it starts, transactionally, so concurrent workers cannot collectively exceed `FACTORY_MAX_JOB_COST`. A run whose reservation would breach the ceiling fails loudly with a terminal worker row and a `worker.budget_exhausted` event. Raising concurrency therefore multiplies provider spend **and** consumes the job budget faster.
 - `FACTORY_AGENT_TIMEOUT` applies per worker. A fixer spawned by a merge conflict is also a full worker run; give it enough time (the default 600s) when conflicts are expected.

@@ -34,9 +34,36 @@ KNOWN_FAILURES = (
      "Permintaan melebihi batas konteks model. Perkecil brief atau rencanakan lebih sedikit "
      "tugas sekaligus."),
     (re.compile(r"connection refused|name resolution|getaddrinfo|network is unreachable|"
-                r"temporary failure in name resolution|timed out|timeout", re.I),
+                r"temporary failure in name resolution", re.I),
      "Provider tidak bisa dihubungi. Periksa koneksi jaringan server lalu coba lagi."),
 )
+
+# A worker that runs out of time is not a provider problem, so it is matched before the more
+# general timeout wording above could ever swallow it, and it names the knob to raise. Measured
+# case: a repair worker was killed at 600.5s because it inherited the one-shot call budget while
+# its real budget is 1800s.
+TIMEOUT_FAILURE = re.compile(r"exceeded (?:its )?(\d+)\s*s deadline", re.I)
+
+
+def describe_timeout(exc, worker_timeout=None) -> str:
+    """An explanation for a worker killed by a deadline, or an empty string.
+
+    Separate from `explain` because it needs the configured budget to say anything useful:
+    "timed out" alone does not tell an operator whether the task is too large or the limit is
+    too small, and that is the only decision they have to make.
+    """
+    message = str(exc)
+    reason = getattr(exc, "reason", "")
+    match = TIMEOUT_FAILURE.search(message)
+    if not match and reason != "timeout":
+        return ""
+    limit = match.group(1) if match else (str(worker_timeout) if worker_timeout else "")
+    detail = f" setelah {limit} detik" if limit else ""
+    return ("Pekerjaan model dihentikan karena melewati batas waktu" + detail + ". Tugas ini "
+            "kemungkinan lebih besar daripada anggarannya: naikkan FACTORY_WORKER_TIMEOUT "
+            "(batas satu pekerja harness) atau FACTORY_JOB_TIMEOUT (batas seluruh pekerjaan), "
+            "atau pecah tugasnya menjadi lebih kecil. Periksa juga sisa perubahan di product "
+            "repository sebelum mengulang.")
 
 
 def explain(text) -> str:
@@ -65,4 +92,10 @@ def describe(exc) -> str:
     output = getattr(exc, "output", "")
     if output:
         parts.append(str(output)[-4000:])
+    # A deadline is checked before the provider vocabulary: a killed worker's output is usually
+    # just its own progress stream, and matching "timeout" inside that stream would blame the
+    # network for a budget that was simply too small.
+    deadline = describe_timeout(exc)
+    if deadline:
+        return deadline
     return explain("\n".join(parts))

@@ -184,3 +184,42 @@ def test_a_normal_assistant_message_reports_no_problem():
     text, problems = assistant_json(line)
     assert text == '{"ok":true}'
     assert problems == []
+
+
+def test_a_worker_killed_by_its_deadline_says_which_knob_to_raise():
+    """The measured incident: a repair worker died at 600.5s and reported nothing useful."""
+    from factory.process import ProcessError
+
+    error = ProcessError("Process exceeded its 600s deadline and was stopped", reason="timeout")
+    reason = diagnosis.describe(error)
+    assert "600" in reason, "the limit that was hit must be named"
+    assert "FACTORY_WORKER_TIMEOUT" in reason, "the operator needs the knob, not just the fact"
+    assert "FACTORY_JOB_TIMEOUT" in reason
+
+
+def test_a_timeout_is_not_described_as_a_provider_problem():
+    """A killed worker's own output can mention network timeouts; that must not become blame."""
+    from factory.process import ProcessError
+
+    error = ProcessError("Process exceeded its 1800s deadline and was stopped",
+                         reason="timeout",
+                         output="fetch failed: timeout of 5000ms exceeded\nconnection timed out")
+    reason = diagnosis.describe(error)
+    assert "Provider tidak bisa dihubungi" not in reason
+    assert "batas waktu" in reason
+
+
+def test_a_non_zero_exit_is_still_not_guessed_at():
+    from factory.process import ProcessError
+
+    assert diagnosis.describe(ProcessError("Process failed with exit code 3", reason="exit",
+                                          output="Traceback: TypeError: boom")) == ""
+
+
+def test_the_process_error_carries_its_reason_and_output():
+    from factory.process import ProcessError
+
+    error = ProcessError("boom", reason="timeout", output="tail")
+    assert error.reason == "timeout"
+    assert error.output == "tail"
+    assert isinstance(error, RuntimeError)

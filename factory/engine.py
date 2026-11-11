@@ -426,7 +426,14 @@ class Engine:
         (work / f"repair-{attempt}-instruction.txt").write_text(instruction)
         store.event(project["id"], job["id"], "repair.running", {"attempt": attempt + 1})
         before = products.head_commit(root)
-        transcript = self.parallel.worker.run_task(root, instruction, cancelled=cancelled)
+        # A repair worker edits code and re-runs the build, exactly like an implementation
+        # worker, so it needs the same budget. It was called without a timeout and therefore
+        # inherited `agent_timeout` (600s, the budget for a one-shot JSON call), while the
+        # worker budget is `worker_timeout` (1800s). Measured live: a repair on the rempah-rempah
+        # POS application hit 600.5s and was killed mid-edit, leaving five modified files and a
+        # job that reported nothing more useful than "execution failed".
+        transcript = self.parallel.worker.run_task(root, instruction, cancelled=cancelled,
+                                                  timeout=self.settings.worker_timeout)
         (work / f"repair-{attempt}-transcript.txt").write_text(transcript[-100000:])
         commit = products.commit_all(root, f"Repair failing gate (attempt {attempt + 1})")
         # Compare against the commit from *before* this repair. `commit_all` returns HEAD

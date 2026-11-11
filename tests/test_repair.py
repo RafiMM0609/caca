@@ -45,10 +45,12 @@ class ScriptedWorker:
 
     def __init__(self):
         self.instructions = []
+        self.timeouts = []
 
     def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
                  skills=()):
         self.instructions.append(instruction)
+        self.timeouts.append(timeout)
         target = Path(worktree) / "index.html"
         # A repair run must actually change the tree: a repair that commits nothing is
         # rejected on purpose, so an idle double would test the wrong branch.
@@ -297,3 +299,23 @@ def test_a_contract_defect_does_not_spend_a_repair_worker(settings, store, proje
     assert "contract.defect" in events, "the operator must be told the test is the defect"
     assert "json_contains" in events["contract.defect"]["detail"]
     assert "repair.running" not in events, "nothing is repaired when nothing can be fixed"
+
+
+def test_the_repair_worker_gets_the_worker_budget_not_the_call_budget(settings, store, project, plan):
+    """Measured production failure, as a regression.
+
+    `_repair_then_retry` called `run_task` with no `timeout`, so the repair worker inherited
+    `agent_timeout` (600s), the budget for a one-shot JSON call, while ordinary workers get
+    `worker_timeout` (1800s). A repair on the rempah-rempah POS application was killed at 600.5s
+    mid-edit, leaving five modified files and a job that reported only "execution failed".
+    """
+    verifier = FailingThenPassingVerifier(failures=1)
+    worker = ScriptedWorker()
+    build(settings, store, project, verifier, worker, plan)
+
+    assert len(worker.timeouts) == 2, "one implementation run, one repair run"
+    assert all(t == settings.worker_timeout for t in worker.timeouts), (
+        "every harness worker, repair included, gets the worker budget; got "
+        f"{worker.timeouts} against worker_timeout={settings.worker_timeout}")
+    assert settings.worker_timeout > settings.agent_timeout, (
+        "this regression is only meaningful while the two budgets differ")

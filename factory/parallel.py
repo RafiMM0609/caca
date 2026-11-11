@@ -349,7 +349,10 @@ class ParallelBuilder:
             # The fixer works on a detached worktree of the target so the resolved result is
             # the target itself, not another branch that would need a second reconciliation.
             products.detached_worktree(root, fixer_wt, "main")
-            self.worker.run_task(fixer_wt, instruction, cancelled=cancelled)
+            # Same budget as any other worker: resolving a conflict means editing code and
+            # re-running the build. Without `timeout` this inherited the 600s agent budget.
+            self.worker.run_task(fixer_wt, instruction, cancelled=cancelled,
+                                 timeout=self.settings.worker_timeout)
             if products.has_conflicts(fixer_wt):
                 raise ValueError("Fixer left unresolved conflicts")
             fixer_commit = products.commit_all(fixer_wt, f"Resolve merge conflict for {outcome.task_id}")

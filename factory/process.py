@@ -11,7 +11,18 @@ class Cancelled(RuntimeError):
 
 
 class ProcessError(RuntimeError):
-    pass
+    """A child process failed. `output` carries what it printed; `reason` says why we stopped it.
+
+    `reason` exists because a deadline and a crash were indistinguishable to the caller: the
+    engine only saw "ProcessError" and printed "inspect task evidence", so an operator could not
+    tell a worker that ran out of time from one that died on a non-zero exit. A repair worker
+    hitting its deadline was reported as an unexplained failure for ten minutes of wall time.
+    """
+
+    def __init__(self, message, *, reason="exit", output=""):
+        super().__init__(message)
+        self.reason = reason
+        self.output = output
 
 
 def run(argv, *, cwd=None, env=None, input_data=b"", timeout=300, cancelled=lambda: False,
@@ -32,7 +43,10 @@ def run(argv, *, cwd=None, env=None, input_data=b"", timeout=300, cancelled=lamb
                 if cancelled():
                     raise Cancelled("Cancellation requested")
                 if time.monotonic() > deadline:
-                    raise ProcessError(f"Process exceeded {timeout}s deadline")
+                    stopped = ProcessError(
+                        f"Process exceeded its {timeout}s deadline and was stopped", reason="timeout")
+                    stopped.output = output.decode("utf-8", errors="replace")[-100000:]
+                    raise stopped
                 for key, _ in selector.select(timeout=0.2):
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if not chunk:
@@ -54,9 +68,8 @@ def run(argv, *, cwd=None, env=None, input_data=b"", timeout=300, cancelled=lamb
                 text = f"[OUTPUT TRUNCATED: discarded {truncated} earlier characters]\n" + text
             if code:
                 # Output can contain credentials; caller persists only explicitly reviewed data.
-                error = ProcessError(f"Process failed with exit code {code}")
-                error.output = text[-100000:]
-                raise error
+                raise ProcessError(f"Process failed with exit code {code}", reason="exit",
+                                   output=text[-100000:])
             return text
         finally:
             selector.close()
