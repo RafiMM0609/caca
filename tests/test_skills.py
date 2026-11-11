@@ -157,14 +157,15 @@ def test_the_argv_adds_an_explicit_skill_alongside_no_skills(monkeypatch, tmp_pa
 
 
 def test_the_vendored_skills_resolve_from_the_repository(settings=None):
-    """The five vendored skills must be findable by name, or the plan cannot reference them."""
+    """Every vendored skill must be findable by name, or the plan cannot reference them."""
     from factory.config import Settings
 
     config = Settings(data=ROOT / "data", operator_token="o" * 40, release_token="r" * 40,
                       model="test/model")
     root = config.skills_dir()
     assert root.is_dir(), f"skills directory missing: {root}"
-    for name in ("emil-design-eng", "animate", "apple-design", "mobile-native", "break-ui"):
+    for name in ("emil-design-eng", "animate", "apple-design", "mobile-native", "break-ui",
+                 "design-taste-frontend"):
         paths = PiWorker.skill_paths([name], root)
         assert Path(paths[0]).name == name
 
@@ -182,5 +183,14 @@ def test_every_vendored_skill_declares_a_name_matching_its_directory():
 def test_the_vendor_record_names_a_source_and_a_licence():
     text = (Path(__file__).resolve().parent.parent / "skills" / "VENDORED.md").read_text()
     assert "github.com/emilkowalski/skills" in text
+    assert "github.com/Leonxlnx/taste-skill" in text
     assert "MIT" in text
     assert "Commit" in text, "an unpinned vendored skill can change under the build"
+
+
+def test_every_vendored_skill_directory_is_named_in_the_vendor_record():
+    """A skill added without a pinned source defeats the reason the vendor record exists."""
+    root = Path(__file__).resolve().parent.parent / "skills"
+    record = (root / "VENDORED.md").read_text()
+    for directory in sorted(p for p in root.iterdir() if p.is_dir()):
+        assert f"`{directory.name}`" in record, f"{directory.name} has no entry in VENDORED.md"
