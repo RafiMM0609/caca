@@ -35,6 +35,14 @@ class TestAction(StrictModel):
     body: dict | None = None
     status: int = Field(default=200, ge=100, le=599)
     json_equals: dict | None = None
+    # Subset assertion: every key written here must match, and extra keys in the response are
+    # ignored. `json_equals` demands the response be *identical*, which no realistic endpoint
+    # satisfies: a login route returning `{id, name, email, role}` failed a case that only
+    # wanted to see `role`, and the repair worker then "fixed" the application by adding a
+    # `?view=full` query parameter so the default response became smaller. The test was the
+    # defect; the gate was pointing the worker at the wrong wall. Use `json_equals` only for
+    # a response whose complete shape the contract actually states.
+    json_contains: dict | None = None
     count: int = Field(default=-1, ge=-1, le=100_000)
     # Request headers. Without these, any application with a login is untestable: an API case
     # cannot present a bearer token or an API key, and a browser case cannot seed state through
@@ -94,8 +102,15 @@ class TestAction(StrictModel):
             raise ValueError("Press must name a single key such as Enter or Control+A")
         if self.action == "expect_count" and self.count < 0:
             raise ValueError("expect_count requires a non-negative count")
-        if self.action == "request" and self.method == "HEAD" and self.json_equals is not None:
+        if self.json_equals is not None and self.json_contains is not None:
+            raise ValueError("Use either json_equals or json_contains for one request, not both")
+        if (self.action == "request" and self.method == "HEAD"
+                and (self.json_equals is not None or self.json_contains is not None)):
             raise ValueError("HEAD responses have no body to compare")
+        if (self.json_equals is not None or self.json_contains is not None) and self.action != "request":
+            raise ValueError("A JSON assertion belongs to a request action")
+        if self.json_contains is not None and not self.json_contains:
+            raise ValueError("json_contains must name at least one field; an empty subset asserts nothing")
         return self
 
 
@@ -154,6 +169,79 @@ class TestSuite(StrictModel):
 
 def ignorable_console(text):
     return any(marker in text for marker in IGNORABLE_CONSOLE)
+
+
+class ContractDefect(AssertionError):
+    """The acceptance case cannot be satisfied by any correct application.
+
+    Raised only for failures that are provably the *test's* fault, so the repair loop can stop
+    before spending a worker on the wrong target. The motivating evidence: a case asserted
+    `json_equals` against a partial user object, a correct login route returned `{id, name,
+    email, role}`, the gate failed, and the repair worker concluded the API was wrong and added
+    a `?view=full` query parameter to the application so its default response shrank to match
+    the test. The application was right; the contract was not, and nothing distinguished the two.
+    """
+
+
+def json_subset_mismatch(expected, actual, path="$"):
+    """Return the first place the response disagrees with a subset expectation, or None.
+
+    Used by `json_contains`. The path is reported because a bare "assertion failed" made a
+    repair worker change unrelated files: it could see *that* the response differed, never
+    *where*, so it guessed.
+    """
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return f"{path} is {type(actual).__name__}, expected an object"
+        for key, want in expected.items():
+            if key not in actual:
+                return f"{path}.{key} is missing"
+            found = json_subset_mismatch(want, actual[key], f"{path}.{key}")
+            if found:
+                return found
+        return None
+    if isinstance(expected, list):
+        if not isinstance(actual, list):
+            return f"{path} is {type(actual).__name__}, expected a list"
+        if len(expected) != len(actual):
+            return f"{path} has {len(actual)} item(s), expected {len(expected)}"
+        for index, want in enumerate(expected):
+            found = json_subset_mismatch(want, actual[index], f"{path}[{index}]")
+            if found:
+                return found
+        return None
+    if expected != actual:
+        return f"{path} is {actual!r}, expected {expected!r}"
+    return None
+
+
+def _expected_is_partial(expected, actual):
+    """True when `expected` matches `actual` except that some object lost keys somewhere.
+
+    Shrinkage may happen at any depth, so the flag is threaded through the walk rather than
+    tested per level: a nested object that dropped a field while its parent kept every key is
+    still the same defect. Only omission counts. A different *value*, a missing key the
+    expectation names, or a mismatched list length is a real behavioural mismatch and stays a
+    normal failure — the point is to catch "the test forgot the other fields", never to excuse
+    an endpoint that returns the wrong data.
+    """
+    shrunk = False
+
+    def walk(exp, act):
+        nonlocal shrunk
+        if isinstance(exp, dict) and isinstance(act, dict):
+            if not set(exp) <= set(act):
+                return False
+            if len(exp) < len(act):
+                shrunk = True
+            return all(walk(value, act[key]) for key, value in exp.items())
+        if isinstance(exp, list) or isinstance(act, list):
+            if not (isinstance(exp, list) and isinstance(act, list)) or len(exp) != len(act):
+                return False
+            return all(walk(a, b) for a, b in zip(exp, act))
+        return exp == act and type(exp) is type(act)
+
+    return walk(expected, actual) and shrunk
 
 
 def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: False,
@@ -223,13 +311,34 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                                                headers=action.headers or None,
                                                timeout=duration) as response:
                                 assert response.status_code == action.status, "API status assertion failed"
-                                if action.json_equals is not None:
+                                if action.json_equals is not None or action.json_contains is not None:
                                     data = bytearray()
                                     for chunk in response.iter_bytes():
                                         data.extend(chunk)
                                         if len(data) > 1_000_000 or time.monotonic() > case_deadline:
                                             raise ValueError("API response exceeded test limits")
-                                    assert json.loads(data) == action.json_equals, "API JSON assertion failed"
+                                    actual = json.loads(data)
+                                    if action.json_equals is not None:
+                                        if actual != action.json_equals and _expected_is_partial(
+                                                action.json_equals, actual):
+                                            # The test described a *subset* of the response and
+                                            # demanded an exact match. No application change can
+                                            # satisfy that without deleting fields the contract
+                                            # never said to delete, and the repair worker proved
+                                            # it: it removed data to make the assertion pass.
+                                            raise ContractDefect(
+                                                "API JSON assertion failed: the case asserts the "
+                                                "response equals a partial object, but the endpoint "
+                                                "returns more fields. Expecting a subset requires "
+                                                "json_contains, not json_equals.")
+                                        assert actual == action.json_equals, "API JSON assertion failed"
+                                    else:
+                                        # Name the offending path. "API JSON assertion failed" alone
+                                        # sent a repair worker hunting through the whole application.
+                                        mismatch = json_subset_mismatch(action.json_contains, actual)
+                                        assert mismatch is None, (
+                                            "API JSON assertion failed: " + mismatch if mismatch
+                                            else "API JSON assertion failed")
                         elif action.action == "goto":
                             page.goto(case_url + action.path, wait_until="domcontentloaded", timeout=duration * 1000)
                         elif action.action == "reload":

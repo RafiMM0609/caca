@@ -15,6 +15,7 @@ from .memory import Memory
 from .models import Plan, Review
 from .parallel import WORKER_BRIEF, ParallelBuilder
 from . import products
+from . import testing as testing_module
 from .testing import TestSuite
 from .process import Cancelled
 from .verifier import Verifier
@@ -271,7 +272,12 @@ class Engine:
             "which depends on sibling tag names and silently matches nothing when items are wrapped. "
             "To check what a form field contains, use `expect_value` with the exact value; an "
             "`<input>` has no text content, so `expect_text` cannot observe or verify a field and "
-            "`expect_text` with an empty value asserts nothing and is rejected.")
+            "`expect_text` with an empty value asserts nothing and is rejected. "
+            "For a JSON response, prefer `json_contains` (a subset: every field you name must "
+            "match, extra fields in the response are ignored) and use `json_equals` only when the "
+            "contract states the response's COMPLETE shape. A realistic endpoint returns more "
+            "than the one field you care about, so `json_equals` on a partial object fails against "
+            "a correct application and sends the repair worker after the wrong defect.")
         flows = [f.model_dump() for f in plan.test_flows]
         # The tester must see the same approved contract the workers implemented. Sending only
         # the flow list let it assert copy the operator never approved and the workers never
@@ -375,6 +381,20 @@ class Engine:
             except Exception as exc:
                 evidence = repair_module.describe_evidence(work)
                 evidence["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+                # A contract defect is the *test's* fault, and no application change can satisfy
+                # it. Repairing here would spend a worker editing correct code — the recorded
+                # case of this made a worker add `?view=full` to a correct login API so its
+                # default response matched a partial `json_equals`. Fail loudly instead and name
+                # the fix: correct the case, then re-approve.
+                if isinstance(exc, testing_module.ContractDefect):
+                    (work / "verification.txt").write_text(
+                        f"The acceptance contract is defective, not the application: {exc}\n"
+                        "No repair was attempted because no application change can satisfy this "
+                        "assertion. Fix the acceptance case (use `json_contains` for a subset), "
+                        "then re-approve the plan.")
+                    self.store.event(project["id"], job["id"], "contract.defect",
+                                     {"error": str(exc)[:500]})
+                    raise
                 atomic_json(work / f"repair-{attempt}-evidence.json", evidence)
                 store.event(project["id"], job["id"], "repair.evidence",
                             {"attempt": attempt + 1,

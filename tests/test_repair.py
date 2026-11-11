@@ -244,3 +244,56 @@ def test_a_missing_report_is_not_an_error(tmp_path):
     assert evidence["failures"] == []
     brief = repair_module.repair_instruction(evidence)
     assert "no evidence was captured" in brief
+
+
+class ContractDefectVerifier:
+    """The gate fails because the acceptance *case* is defective, not the application."""
+
+    __test__ = False
+
+    def __init__(self):
+        self.calls = 0
+
+    def verify(self, profile, source, output, job, cancelled, **testing):
+        self.calls += 1
+        from factory.testing import ContractDefect
+
+        evidence = testing.get("evidence")
+        if evidence:
+            evidence.mkdir(parents=True, exist_ok=True)
+            (evidence / "report.json").write_text(json.dumps({
+                "status": "failed",
+                "cases": [{"flow_id": "health", "name": "Health is ok", "kind": "api",
+                           "status": "failed", "error": "ContractDefect",
+                           "message": "API JSON assertion failed: the case asserts a partial "
+                                      "object; use json_contains"}]}))
+        raise ContractDefect("API JSON assertion failed: the case asserts a partial object; "
+                            "use json_contains")
+
+
+def test_a_contract_defect_does_not_spend_a_repair_worker(settings, store, project, plan):
+    """The recorded production failure, as a regression.
+
+    A case demanded an exact match on a partial object. The gate failed, the loop ran a repair
+    worker, and that worker deleted fields from a correct API (adding `?view=full`) so the
+    default response shrank to match the test — 22 files changed, job still failed, and the
+    application was left worse than it started. When the defect is provably the test's, no
+    worker may be spent on the application at all.
+    """
+    verifier = ContractDefectVerifier()
+    worker = ScriptedWorker()
+    job = build(settings, store, project, verifier, worker, plan)
+
+    # Exactly one run: the ordinary implementation worker. A second would be a repair worker,
+    # which is what must not happen here.
+    assert len(worker.instructions) == 1, "no repair worker may run for a defective contract"
+    assert verifier.calls == 1, "the gate must not be retried against an unsatisfiable case"
+    result = store.project(project["id"])
+    assert result["state"] != "ready", "an unsatisfiable gate must never publish"
+    assert not result["artifact"]
+
+    events = {e["kind"]: e for e in store.all(
+        "SELECT kind, detail FROM events WHERE job_id=? ORDER BY seq", (job["id"],))}
+    assert "contract.defect" in events, "the operator must be told the test is the defect"
+    assert "json_contains" in events["contract.defect"]["detail"]
+    assert "repair.running" not in events, "nothing is repaired when nothing can be fixed"

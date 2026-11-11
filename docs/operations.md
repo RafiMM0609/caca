@@ -106,6 +106,8 @@ evidence afterwards.
 
 **Docker (optional, legacy).** Images must be digest pinned, pre-pulled, and contain Python 3 plus any application toolchain. Verification has no network access, so dependencies must be preinstalled in an audited image; do not enable network to make arbitrary generated install scripts work. Checks execute in `/work/app`, see source at `/source` read-only and checks at `/checks` read-only, and must export deployable files to `/output`. For Docker profiles `/output` is the export contract and `artifact_dir` is not used.
 
+For JSON responses the tester offers `json_contains` (subset: named fields must match, extra response fields are ignored) and `json_equals` (the response must be identical). Prefer `json_contains`: a partial `json_equals` fails a correct application that returns more fields than the case named, and the repair loop will then spend a worker editing correct code. A case that is provably unsatisfiable is reported as a `contract.defect` and fails the job without a repair attempt — fix the case with `json_contains` and re-approve.
+
 `npm ci` requires network access, which is why the Nuxt Studio profile is native rather than Docker. Add application-specific acceptance tests, not just build checks. The included static check is structural; it is not browser, accessibility, security or business acceptance certification.
 
 ## Timeouts and run budgets
