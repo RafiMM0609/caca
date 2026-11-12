@@ -50,6 +50,92 @@ Open http://127.0.0.1:8080 and use the operator token from your local secret fil
 
 Requires Python 3.12+, uv, Git, Node 24, the Pi 1.5.0 CLI (`npm i -g @earendil-works/pi-coding-agent`), and a provider credential.
 
+## Configuring the environment
+
+All configuration is environment variables plus one optional JSON file. There is no config
+wizard: `factory init` writes a secret file with the two tokens, and everything else is a
+variable you export before starting the API and the scheduler.
+
+```sh
+factory init --data ./data     # writes data/secrets.env, mode 0600, never overwrites
+```
+
+The file `data/secrets.env` holds the two tokens. Keep it out of version control (`data/` is
+git-ignored by design) and load it with `set -a; . ./data/secrets.env; set +a`. Both processes
+must share the same environment, because the scheduler reserves budget the API reported.
+
+### Required
+
+| Variable | Meaning |
+| --- | --- |
+| `FACTORY_OPERATOR_TOKEN` | Operator credential, at least 32 characters. Written by `factory init`. |
+| `FACTORY_RELEASE_TOKEN` | Separate production-release credential, at least 32 characters, must differ from the operator token. |
+| `FACTORY_MODEL` | Exact `provider/model`, for example `opencode-go/deepseek-v4.1-flash`. Planning, test preparation and review all fail without it. |
+
+A provider credential must also be exported: `OPENCODE_API_KEY`, `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or another key the Pi CLI reads. These
+reach model workers only; generated applications never receive them.
+
+### Useful path and behaviour switches
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FACTORY_DATA` | `./data` | SQLite store, job evidence, product repositories and served copies. |
+| `FACTORY_CONFIG` | `<data>/config.json` | JSON file holding `profiles` and `targets`. `examples/config-studio-linux.json` is the Studio profile. |
+| `FACTORY_PI` | `pi` | Path to the Pi CLI if it is not on `PATH`. |
+| `FACTORY_ALLOW_NATIVE` | unset | Must be `1` to execute locally. Native execution is not a sandbox. |
+| `FACTORY_SKILLS_DIR` | the shipped `skills/` | Where vendored design skills are resolved from. |
+| `FACTORY_CHROMIUM` | Playwright's own | Browser binary for the tester when Playwright's download is absent. |
+| `FACTORY_PLAYWRIGHT_BROWSERS` | `~/.cache/ms-playwright` | Browser directory handed to model workers, so a design task can look at its own page without installing a second browser. Exported only when the directory exists. |
+| `FACTORY_NPM_CACHE` | a per-run temp dir | Shared npm cache for verification and local runs. |
+| `FACTORY_MEMORIX` | disabled | Path to a Memorix binary for optional project memory. Advisory only; SQLite stays the truth. |
+
+### Timeouts
+
+Each stage has its own clock, because one model call and one worker run are different units of
+work.
+
+| Variable | Default | Bounds |
+| --- | --- | --- |
+| `FACTORY_AGENT_TIMEOUT` | 600s | One tool-free structured call: planner, tester preparation, review. |
+| `FACTORY_WORKER_TIMEOUT` | 1800s | One Pi harness worker that may edit a tree and build it. |
+| `FACTORY_SKILL_WORKER_TIMEOUT` | 3600s | The same, for a task that declares a design skill, because design work is a build-look-adjust loop. Must be at least `FACTORY_WORKER_TIMEOUT` and at most `FACTORY_JOB_TIMEOUT`. |
+| `FACTORY_JOB_TIMEOUT` | 7200s | Floor for one whole job; scaled upward by the plan's wave count. |
+| `FACTORY_MAX_JOB_TIMEOUT` | 21600s | Hard cap for that scaled estimate. |
+
+### Cost reservations
+
+Nothing is billed by this system. Every model call and worker run **reserves** an amount against
+`jobs.reserved_usd` inside a transaction before it starts, so concurrent workers cannot
+collectively pass the ceiling. Reservations are admission estimates, not measured spend: a build
+that reserved $20 can have cost a fraction of a cent on the provider.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FACTORY_MAX_COST` | $2.00 | Reserved per structured model call. |
+| `FACTORY_WORKER_COST` | $0.25 | Reserved per harness worker; `0` stops metering workers. |
+| `FACTORY_MAX_JOB_COST` | $20.00 | Ceiling for one job's reservations. |
+| `FACTORY_WORKER_CONCURRENCY` | 3 | Simultaneous workers, each its own process tree. Lower it on a small host: two concurrent Nuxt builds can exhaust 2 GB. |
+
+**Size `FACTORY_MAX_JOB_COST` from the plan, not by taste.** An N-task plan reserves roughly
+`N × FACTORY_MAX_COST + FACTORY_MAX_COST + N × FACTORY_WORKER_COST`, because every task is
+reviewed and every review is a structured call. At the defaults that is exactly $20 for eight
+tasks, so an eight-task plan fails on its last task with `WorkerBudgetExhausted` unless the
+ceiling is raised. Raise it to cover the largest plan you intend to run:
+
+```sh
+export FACTORY_MAX_JOB_COST=60   # covers roughly 25 tasks at the default reservation sizes
+```
+
+A failed job keeps the reservations it made; re-approving the same revision enqueues a new job
+with a fresh ledger and resumes from the tasks already merged.
+
+### Checking the result
+
+```sh
+uv run factory doctor    # resolved Pi path, model, profiles, and every check each profile runs
+```
+
 ## Visual editing and the independent tester
 
 The dashboard integrates local Nuxt Studio drafts and an independent tester that prepares API/browser cases while workers implement. Editing is scoped to schema-backed content, not arbitrary Vue source. See [Studio setup, journey and limits](docs/studio-and-tester.md).
@@ -59,9 +145,9 @@ The dashboard integrates local Nuxt Studio drafts and an independent tester that
 - **Native workers are not sandboxed.** Each worker gets a temporary `HOME`, `PI_CODING_AGENT_DIR` and XDG directories, so `~/.ssh`, `~/.aws` and the operator's git identity are unreachable, and factory tokens are removed from its environment. Provider credentials still reach the worker because the model call requires them: a worker that can run `env` can observe the provider key. Docker's CPU/RAM isolation does not apply.
 - One build scheduler and one deployment scheduler use distinct process locks. Jobs are durable and atomically claimed. Interrupted work is marked for inspection, never blindly replayed.
 - Memory is optional. `FACTORY_MEMORIX=/path/to/memorix` enables project-scoped MCP search/store. Memorix failure emits an event and does not replace SQLite task truth. Live interoperability is not yet verified.
-- `FACTORY_WORKER_CONCURRENCY` (default 3, max 16) bounds simultaneous workers. Each runs as its own process tree and applies the timeout `FACTORY_AGENT_TIMEOUT`.
+- `FACTORY_WORKER_CONCURRENCY` (default 3, max 16) bounds simultaneous workers. Each runs as its own process tree and applies `FACTORY_WORKER_TIMEOUT`, or `FACTORY_SKILL_WORKER_TIMEOUT` when its task declares a design skill.
 - Context passed to a **reviewer** is a bounded diff (200 KB) rather than the whole tree. The 300 KB text limit and 2 MB source limit still govern source snapshots served to the dashboard.
-- Model-call reservations default to $2 per invocation and $20 per job, and every harness worker run now reserves `FACTORY_WORKER_COST` (default $0.25, `0` opts out) against the same job ceiling, so a wave of workers cannot spend past `FACTORY_MAX_JOB_COST`. Reservations are ceilings, not metered bills.
+- Model calls and harness worker runs reserve against one job ceiling, so a wave cannot spend past `FACTORY_MAX_JOB_COST`. Reservations are admission estimates, not metered bills; see [cost reservations](#cost-reservations) for the formula and why a larger plan needs a larger ceiling.
 - The same reviewed artifact digest must pass staging before production. Lost SSH outcomes become `unknown` and block retries until reconciled.
 - No automatic database migration or rollback is performed on generated applications.
 - Legacy deployment code remains, but the dashboard hides deployment controls and the local examples have no targets. Do not activate deployment as part of ordinary build or editor work.
