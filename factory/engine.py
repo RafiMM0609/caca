@@ -11,6 +11,7 @@ from .agents import PiAgent
 from .db import Store, uid
 from .deploy import Deployer
 from . import diagnosis, serving
+from .design import DesignDealer, deal_blocks
 from .memory import Memory
 from .models import Plan, Review
 from .parallel import WORKER_BRIEF, ParallelBuilder
@@ -24,6 +25,13 @@ from . import repair as repair_module
 from .workspace import atomic_json, package
 
 logger = logging.getLogger(__name__)
+
+# The vendored skills that mean "this task builds or restyles a page". A task carrying one is
+# the signal the design dealer keys on, and the reason is not cosmetic: these are the tasks
+# whose workers were measured spending most of their wall clock choosing a palette, a
+# typeface and a motion scheme that the skill can answer from a table.
+DESIGN_SKILLS = frozenset({"design-taste-frontend", "emil-design-eng", "animate",
+                           "apple-design", "mobile-native", "break-ui"})
 
 PLANNER_PROMPT = (
     "Design a concrete task plan with acceptance criteria. "
@@ -470,6 +478,39 @@ class Engine:
         from .local_app import runtime_facts
         toolchain = runtime_facts()
 
+        # The page's design is dealt once per build, before any worker starts, and only when a
+        # task in the plan declares a design skill. That is the existing signal that a task is
+        # doing interface work, so no new field is needed and an API-only build pays nothing.
+        #
+        # Why the controller deals it instead of the planner: the planner is a tool-free
+        # structured client, so it cannot run the skill's Node dealer scripts, and asking a
+        # model to recall 64 palettes and 39 type pairings from a prompt would be a guess
+        # dressed as a decision. Why the worker does not deal it: measured on the Toko Roti
+        # rebuild, one worker spent 36 of a 56-minute job choosing colours, photographs and
+        # motion, then kept what it had. Dealing here turns that deliberation into a lookup.
+        design_tasks = [task.id for task in plan.tasks
+                        if any(name in DESIGN_SKILLS for name in task.skills)]
+        deal = None
+        if design_tasks:
+            try:
+                dealer = DesignDealer(self.settings.skills_dir())
+                deal = dealer.deal(project["brief"], seed=project["id"])
+                atomic_json(work / "design-deal.json",
+                            {"tasks": design_tasks, **deal.as_dict()})
+                store.event(project["id"], job["id"], "design.dealt",
+                            {"page_kind": deal.page_kind, "trade": deal.trade,
+                             "palette": deal.palette.get("id"),
+                             "type": deal.type_pairing.get("id"),
+                             "moments": [m["id"] for m in deal.moments]})
+            except Exception as exc:
+                # A dealer that cannot read its tables must not fail the build: the worker can
+                # still build from the brief and the skill, which is exactly what happened
+                # before this existed.
+                logger.warning("design deal failed: %s", exc)
+                store.event(project["id"], job["id"], "design.unavailable",
+                            {"error": f"{type(exc).__name__}: {exc}"[:300]})
+                deal = None
+
         def instructions_for(task, base_context):
             # The worker reads the real files itself, so it gets the task contract and the
             # product brief rather than a full source dump.
@@ -496,6 +537,8 @@ class Engine:
                    if profile.env else "")
                 + "\n\nYOUR TASK (" + task.id + "): " + task.title
                 + "\n" + task.instructions
+                + ("\n\n" + deal_blocks(deal)
+                   if deal is not None and task.id in design_tasks else "")
                 + "\n\nACCEPTANCE CRITERIA:\n" + "\n".join("- " + item for item in task.acceptance)
                 + ("\n\nOTHER TASKS IN THE PLAN:\n" + "\n".join(
                     "- " + other.id + ": " + other.title for other in plan.tasks if other.id != task.id)
@@ -611,7 +654,13 @@ class Engine:
             if path.is_file():
                 target = worktree / path.relative_to(draft)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(path.read_text())
+                # Byte-for-byte, not text-for-text. A starter now ships binary assets beside its
+                # source (self-hosted woff2 fonts, the vendored moment layer's files), and
+                # `read_text()`/`write_text()` raised UnicodeDecodeError on the first one, which
+                # failed the whole Studio journey with a message naming no file. A copy that
+                # rewrites bytes is also correct for the text files, minus a newline
+                # translation that had no business happening here.
+                shutil.copyfile(path, target)
         products.commit_all(worktree, f"Apply Studio edit {edit[:12]}")
         self.store.event(project["id"], job["id"], "studio.imported",
                          {"draft": edit, "branch": branch})

@@ -33,7 +33,30 @@ WORKER_BRIEF = (
     "commands to check your work, and edit files directly. Do not edit anything outside "
     "this directory.\n"
     "When you are done, leave the worktree in a state that builds and satisfies the task "
-    "acceptance criteria. Do not run git commands; the factory commits for you."
+    "acceptance criteria. Do not run git commands; the factory commits for you.\n"
+    # The motion rules are here, in the brief every worker reads, rather than only in a skill
+    # file, because the failure they prevent is not a matter of taste: a worker that hand-writes
+    # its own scroll-driven animation fights the vendored layer, doubles the motion a page runs,
+    # and pays for it in wall clock. Measured on the Toko Roti rebuild, one worker spent 36 of a
+    # 56-minute job on visual iteration and wrote 576 lines of bespoke CSS, while the skill's own
+    # reviewed motion layer and its dealt moments sat unused.
+    "\nMOTION AND DESIGN, when this task builds or restyles a page:\n"
+    "- The design is dealt to you in the DEALT DESIGN block: the palette, the type pairing and "
+    "the one moment this page shows. Build what it names. Do not choose a different palette or "
+    "typeface, and do not add a second moment.\n"
+    "- The page's motion layer is already vendored and already linked: the hero entrance, the "
+    "hover and press states, and the dealt moment's scroll behaviour. Write your markup to use "
+    "it. Do not write your own scroll listener, parallax, marquee, reveal-on-scroll, entrance "
+    "animation or hover transition: it duplicates the layer, and two systems animating the same "
+    "element is the most common cause of a page that stutters.\n"
+    "- A moment needs its section to be a direct child of <main>, because its CSS positions the "
+    "section itself. If the page has no <main>, add one around the sections.\n"
+    "- Copy the moment's markup pattern exactly as the DEALT DESIGN block shows it, keeping its "
+    "class names (`mo-ph`, `mo-ph__list`, `mo-ph__ch`, `mo-wh__text`, ...). Those classes are "
+    "how the moment finds its parts; renaming them mounts nothing and looks like it worked.\n"
+    "- Do not add an animation library. The layer is plain CSS transitions and transforms.\n"
+    "- If the page has no moment (the block says so), build it without one rather than inventing "
+    "a substitute.\n"
 )
 
 

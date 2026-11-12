@@ -341,6 +341,76 @@ Checkpoint: 2026-11-08, after commit `5eb3318`. Read [origin and decisions](orig
   it, and the grid assertion was rewritten after the first version passed a deliberate revert —
   it now checks the last rule that actually declares `grid-template-columns`.
 
+- **A page's motion is dealt, vendored and gated** (2026-11-13, branch `feat/living-ui-moments`).
+  The best page the factory had produced scored `moment-none` from the skill's own checker and
+  carried 763 lines of hand-written `index.vue` with its own palette, its own hover states and
+  no dealt moment, while the reviewed `design-taste-frontend` motion layer sat unused. The
+  measured cost of that re-invention was 36 of a 56-minute job spent choosing colours,
+  photographs and motion the worker then kept as it was (`audit-toko-roti-54min.md`).
+
+  Five changes, each verified by running it rather than by reading the skill:
+
+  1. **The design is dealt on the controller** (`factory/design.py`). `DesignDealer` reads the
+     vendored skill's own tables (`library/palettes.json`, `library/type.json`,
+     `assets/moments/index.json`) and picks a palette, a type pairing and **one** moment per
+     page, seeded by project id so a rebuild cannot silently change a project's design and two
+     clients in one trade do not get one template. It runs before any worker starts, only when
+     a task declares a design skill, and its result is written to `design-deal.json` plus the
+     `design.dealt` event. Measured defect found and fixed while testing it: a POS brief naming
+     "warung sate" was dealt the *restaurant* palette, because the trade hint outranked the
+     page kind. A technical kind now never receives a place's trade.
+  2. **The layers are vendored into the starter** (`scripts/vendor_design_assets.py`, output in
+     `factory/starters/nuxt-studio/public/assets/`): 13 dealt moments and the motion layer
+     (440 KB), plus 49 self-hosted font families as `latin` woff2 (1.7 MB). Retired moments,
+     `_demo/` and the galleries are excluded. The script is re-runnable after a skill upgrade.
+  3. **The token naming schemes are bridged** (`public/assets/design-tokens.css`, 1.8 KiB gz).
+     The vendored layers read `--bg`/`--ink`/`--s-*`/`--t-h2`; a page in this stack deals
+     `--p-*`. Without the bridge a moment renders unstyled and silently. A test asserts the
+     bridge defines every name `bundle.css` reads, because one missing name is a silent failure.
+  4. **Moments mount in Nuxt SSR** (`app/plugins/moments.client.ts`, plus static links in
+     `nuxt.config.ts`). Three defects were measured and fixed here, and each is now pinned by a
+     test or a comment at the code that carries the reason:
+     - `moments.js` must **not** be bundled. Vite moved it to `/_nuxt/`, so its
+       `new URL('<id>/moment.js', import.meta.url)` base pointed at a chunk directory: every
+       moment 404'd with an `application/json` MIME type and the page reported `moment-none`.
+       Loaded from `public/` with `@vite-ignore`.
+     - A moment's CSS must be linked **statically** (`bundle.css`). `moments.js` injects it only
+       after the module resolves; measured, `photo-chapters` with scripts off stacked its three
+       photographs full-height on each other and produced a 5636px document with every caption
+       buried. With the static link the same page is a correct three-column rest state.
+     - A moment section must be a **direct child of `<main>`**. The vendored CSS positions
+       `main > [data-moment]`; inside a wrapper `div` a `photo-chapters` section collapsed to
+       133px and never went live. The `WORKER_BRIEF` and the gate both say so now.
+  5. **A narrow motion gate** (`checks/ui_moments.py`, in the Studio profile's `checks_argv`).
+     Chosen over the skill's `consistency.mjs` on cost, measured on this host: `consistency.mjs`
+     takes 106 s and 276 MB for two widths and 181-445 s for four, and reports 53 findings on an
+     artifact that publishes today, so enabling it as a gate would block every existing product.
+     `ui_moments.py` runs in **0.77 s**, needs no browser, and blocks only four measured
+     defects: a moment with no vendored stylesheet, a moment not under `<main>`, a hand-written
+     scroll driver beside the vendored layer, and a transition on a layout property.
+
+  **Measured on the starter, built and served locally** (`nuxt build`, Playwright/Chromium):
+  two moments mount (`data-moments-ready="2"`, zero console errors); the dealt palette resolves
+  (`--ink` = the page's `#2a2622`, not the fallback); exactly two font files are fetched for a
+  two-family page; `photo-chapters` is live and pinned at 1440 (2700 px section, chapters
+  advancing `01 -> 02 -> 03`), a correct three-column rest state under reduced motion, and a
+  correct three-column state with scripts off. Perf: 412 KiB transfer, CLS 0.000, 0 WebGL
+  contexts, 0 long tasks, 0 FAIL. The four new stylesheets total **15.9 KiB gzip**; the Nuxt
+  server under test serves them uncompressed, so the raw 81 KiB is a server setting, not page
+  weight.
+
+  **Tests:** 33 in `tests/test_living_ui.py`, including one that drives the real `Engine` with
+  a scripted worker and asserts the dealt block reaches the UI task's instructions and *not* the
+  API task's. Full suite: 413 passed, 3 skipped. This also caught a real regression the change
+  introduced: `import_studio_edit` copied the draft with `read_text()`/`write_text()`, so the
+  first binary asset (a woff2 file) failed the whole Studio journey with a `UnicodeDecodeError`
+  naming no file. It is now `shutil.copyfile`.
+
+  **Not claimed:** no live model worker ran against the deal, so the effect on worker wall clock
+  is unmeasured; the `consistency.mjs` findings an ordinary generated page still produces are
+  unaddressed and deliberately not gated; and the moment layer's behaviour on a real phone
+  browser was not exercised, only at a 390px viewport.
+
 ## Code map
 
 | Area | Main files |

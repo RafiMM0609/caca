@@ -37,6 +37,11 @@
         ],
         [
           "python3",
+          "{checks}/ui_moments.py",
+          "."
+        ],
+        [
+          "python3",
           "{checks}/js_typecheck.py",
           "."
         ]
