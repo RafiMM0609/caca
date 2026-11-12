@@ -379,3 +379,124 @@ def test_the_engine_deals_design_into_a_ui_task_and_not_an_api_task(tmp_path):
         kinds = [row[0] for row in
                  db.execute("SELECT kind FROM events WHERE project_id=?", (project["id"],))]
     assert "design.dealt" in kinds
+
+
+# -- the dashboard's source view survives the vendored assets ------------------------------
+
+def test_the_source_snapshot_skips_binary_assets_instead_of_failing(tmp_path):
+    """Measured regression: vendoring fonts broke the dashboard's source view.
+
+    `snapshot()` read every file as text for the source endpoint. The first woff2 file raised
+    `UnicodeDecodeError`, so `/api/projects/<id>/source` failed for every product built from
+    the starter - a capability that worked before this change. The fix names the binary files
+    in the response rather than decoding them into mojibake or dropping them silently.
+    """
+    from factory.workspace import snapshot
+
+    root = tmp_path / "source"
+    (root / "public" / "assets" / "fonts").mkdir(parents=True)
+    (root / "app.vue").write_text("<template><p>x</p></template>")
+    (root / "public" / "assets" / "fonts" / "source-serif-4.woff2").write_bytes(
+        b"\x00\x01\x00\x00wOF2\xff\xfe not text")
+    (root / "package-lock.json").write_text("{}")
+
+    snap = snapshot(root)
+    assert "app.vue" in snap, "text source must still be shown"
+    assert "public/assets/fonts/source-serif-4.woff2" not in snap
+    # The omission is reported, not hidden: an operator reading the source view must be able
+    # to tell a file was skipped from a file that does not exist.
+    note = snap["(omitted)"]
+    assert "source-serif-4.woff2" in note
+    assert "package-lock.json" in note
+
+
+def test_the_source_snapshot_reads_the_real_starter():
+    """The starter is 2.1 MB of fonts and moments beside its source.
+
+    Measured: `snapshot()` capped its walk at 2 MB of *files*, so the real starter raised
+    "Workspace size/file count limit exceeded" before reading anything. The budget has to
+    apply to the text the caller receives, not to assets no text view can show.
+    """
+    from factory.workspace import snapshot
+
+    snap = snapshot(STARTER)
+    assert "app/app.vue" in snap
+    assert "nuxt.config.ts" in snap
+    assert "public/assets/design-tokens.css" in snap
+    assert "(omitted)" in snap, "binary assets must be reported as omitted"
+    assert "fonts" in snap["(omitted)"]
+    text = sum(len(value.encode()) for key, value in snap.items() if key != "(omitted)")
+    assert text <= 300_000, f"the text payload must stay inside its budget, got {text}"
+
+
+def test_the_source_snapshot_still_passes_a_plain_project(tmp_path):
+    """The omission note must not appear on a project that omits nothing."""
+    from factory.workspace import snapshot
+
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "index.html").write_text("<!doctype html><html lang='en'><title>x</title></html>")
+    snap = snapshot(root)
+    assert list(snap) == ["index.html"]
+
+
+def test_the_token_bridge_does_not_defeat_the_moment_header_allowance():
+    """Measured defect: `--nav: 0px` in the bridge hid a chapter heading behind a sticky header.
+
+    The vendored moment CSS reserves `var(--nav, var(--nav-h, 72px))` above a pinned section.
+    Defining `--nav` as 0 in the bridge overrides the moment's own 72px fallback, so on a page
+    with a real 73px sticky header the `photo-chapters` heading rendered at y=32 and was covered
+    (`overlapped: true`). Over-reserving costs whitespace; under-reserving hides content.
+    """
+    bridge = (STARTER / "public" / "assets" / "design-tokens.css").read_text()
+    bundle = (STARTER / "public" / "assets" / "moments" / "bundle.css").read_text()
+    assert "var(--nav" in bundle, "the moment CSS is expected to reserve header space"
+    # Whatever the bridge sets --nav to, it must not be a literal zero.
+    import re
+    for match in re.finditer(r"--nav\s*:\s*([^;]+);", bridge):
+        value = match.group(1).strip()
+        assert value not in ("0", "0px"), (
+            "the bridge must not set --nav to zero: it defeats the moment's own 72px fallback "
+            "and hides a pinned section's heading behind a sticky header")
+        assert "72px" in value or "p-nav-height" in value, \
+            f"--nav must default to the layer's own allowance, got {value!r}"
+
+
+def test_the_dealt_block_tells_the_worker_how_to_declare_its_header():
+    """The bridge cannot know a page's header height, so the page must be told to declare it."""
+    from factory.design import DesignDealer, deal_blocks
+
+    block = deal_blocks(DesignDealer(SKILLS).deal("toko roti", seed="s"))
+    assert "p-nav-height" in block, \
+        "a page with a sticky header must be told to set --p-nav-height"
+
+
+def test_the_dealt_block_stays_inside_a_prompt_budget():
+    """The block is repeated on every run of the design task, so its size is a cost.
+
+    The skill's own `look` prose carries bookkeeping written for its dealer report ("the print
+    look is not dealt: tech leaves this moment out"), 482-551 characters for the longest
+    moments. Trimming it to the first sentences kept the worker's instruction intact and cut
+    the block from ~2.3 KB. The cap here is a budget, not a measurement: it fails if a future
+    moment adds prose that would double the per-run prompt cost.
+    """
+    from factory.design import DesignDealer, deal_blocks
+
+    dealer = DesignDealer(SKILLS)
+    for kind in PAGE_KINDS:
+        block = deal_blocks(dealer.deal("toko roti di Bandung", seed="m", page_kind=kind))
+        assert len(block) < 2600, f"{kind} dealt a {len(block)}-character block"
+        # The instruction that makes the block useful must survive the trim.
+        assert "data-moment=" in block
+        assert "do not invent other colours" in block
+
+
+def test_a_long_moment_description_is_cut_at_a_sentence():
+    from factory.design import _first_sentence
+
+    prose = "First sentence here. " + ("Second sentence is very long indeed. " * 20)
+    trimmed = _first_sentence(prose, limit=120)
+    assert len(trimmed) <= 121
+    assert trimmed.startswith("First sentence here.")
+    # A short description is never touched.
+    assert _first_sentence("Short and whole.", limit=120) == "Short and whole."

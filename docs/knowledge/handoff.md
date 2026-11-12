@@ -406,6 +406,36 @@ Checkpoint: 2026-11-08, after commit `5eb3318`. Read [origin and decisions](orig
   first binary asset (a woff2 file) failed the whole Studio journey with a `UnicodeDecodeError`
   naming no file. It is now `shutil.copyfile`.
 
+  **Two regressions and one defect found by re-checking, not assumed away:**
+
+  - `snapshot()` (the dashboard's source view, and model text context) read every file with
+    `read_text()` and capped its *walk* at 2 MB. The starter is now 2.1 MB of fonts and
+    vendored moments beside its source, so `/api/projects/<id>/source` failed for every product
+    built from the starter — a capability that worked before this change — and the 2 MB walk cap
+    rejected the tree before reading anything. Text files are now read one at a time, binary
+    files are named in an `(omitted)` entry rather than decoded into mojibake, and the 300 KB
+    budget applies to the text actually returned. The endpoint had **no test at all**; it has
+    two now, one of which fails against the old implementation.
+  - `import_studio_edit` copied the draft with `read_text()`/`write_text()`, so the first binary
+    asset failed the whole Studio journey. Now `shutil.copyfile`.
+  - The token bridge set `--nav: 0px`, which **defeated** the moment layer's own
+    `var(--nav, var(--nav-h, 72px))` fallback. Measured with a real 73px sticky header: the
+    `photo-chapters` heading rendered at y=32 and was covered by the header
+    (`overlapped: true`). The bridge now defaults `--nav` to the layer's own 72px, and the
+    dealt block tells the worker to set `--p-nav-height` when its header differs. Over-reserving
+    costs whitespace; under-reserving hides content.
+
+  The dealer block was also trimmed from ~2.3 KB to ~2.1 KB per run by cutting the skill's
+  `look` prose at its first sentences: those fields are written for the skill's own report and
+  carried bookkeeping ("the print look is not dealt: tech leaves this moment out") that is an
+  instruction to the skill, not to the page builder.
+
+  **Verified again after those fixes**, built and served locally: moments mount with zero
+  console errors at 1440 and 390; the pinned section is live at 1440 and rests correctly under
+  reduced motion and with scripts off; a page with **no** moment fetches the layer not at all
+  (the plugin returns before the import); and with a sticky header the section heading clears
+  it (104px below a 73px header). Perf 412 KiB, CLS 0.000, 0 WebGL, 0 FAIL.
+
   **Not claimed:** no live model worker ran against the deal, so the effect on worker wall clock
   is unmeasured; the `consistency.mjs` findings an ordinary generated page still produces are
   unaddressed and deliberately not gated; and the moment layer's behaviour on a real phone

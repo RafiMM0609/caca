@@ -71,3 +71,30 @@ def test_failed_auth_rate_limit(client):
         assert client.get("/api/status", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert client.get("/api/status", headers={"Authorization": "Bearer wrong"}).status_code == 429
 
+
+
+def test_the_source_endpoint_survives_binary_assets(client, settings, store, project):
+    """A product built from the starter ships fonts, so this endpoint must not assume text.
+
+    Measured regression: the endpoint read every file with `read_text()`, so the first woff2
+    file raised `UnicodeDecodeError` and the dashboard's source view failed for every product
+    built from the starter. The endpoint had no test at all before this one.
+    """
+    job_id = "job" + "0" * 29
+    source = settings.data / "jobs" / job_id / "source"
+    (source / "public" / "assets" / "fonts").mkdir(parents=True)
+    (source / "app.vue").write_text("<template><p>ok</p></template>")
+    (source / "public" / "assets" / "fonts" / "a.woff2").write_bytes(b"\x00wOF2\xff\xfe binary")
+    with store.tx() as db:
+        db.execute("UPDATE projects SET artifact=? WHERE id=?",
+                   (json.dumps({"job_id": job_id, "digest": "d" * 64}), project["id"]))
+
+    response = client.get("/api/projects/" + project["id"] + "/source")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["app.vue"] == "<template><p>ok</p></template>"
+    assert "(omitted)" in body and "a.woff2" in body["(omitted)"]
+
+
+def test_the_source_endpoint_reports_a_missing_artifact(client, project):
+    assert client.get("/api/projects/" + project["id"] + "/source").status_code == 404

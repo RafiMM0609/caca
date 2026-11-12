@@ -13,6 +13,9 @@ from .models import safe_path
 MAX_ARTIFACT = 150_000_000
 MAX_ARTIFACT_FILES = 10000
 
+# Reserved key in a `snapshot()` result naming the files it could not show as text.
+OMITTED_KEY = "(omitted)"
+
 
 def files_under(root: Path, limit=MAX_ARTIFACT, *, allow_git: bool = False,
                 allow_symlinks: bool = False):
@@ -52,12 +55,49 @@ def files_under(root: Path, limit=MAX_ARTIFACT, *, allow_git: bool = False,
 
 
 def snapshot(root: Path):
-    # Lockfiles are retained on disk for reproducibility, omitted from model/UI text context.
+    """Every source file as text, for the dashboard's source view and model context.
+
+    Two kinds of file are omitted, for two different reasons, and both are listed in the
+    response so the omission is visible rather than silent:
+
+    - **Lockfiles.** They are kept on disk for reproducibility but would swamp a 300 KB text
+      budget with a generated file nobody reads.
+    - **Binary assets.** A starter now ships woff2 fonts and the vendored moment layer beside
+      its source, and `read_text()` on the first of them raised `UnicodeDecodeError`, which
+      broke the dashboard's source view for every product built from the starter. A woff2
+      file is not something a text view can show, so the honest answer is to name it and move
+      on, not to decode it as latin-1 and hand the operator mojibake.
+    """
     locks = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock"}
-    result = {p.relative_to(root).as_posix(): p.read_text() for p in files_under(root, limit=2_000_000)
-              if p.name not in locks}
-    if sum(len(value.encode()) for value in result.values()) > 300_000:
-        raise ValueError("Text context exceeds 300 KB (excluding lockfiles)")
+    result = {}
+    omitted: list[str] = []
+    text_bytes = 0
+    # Walk with the artifact ceiling, not the text one. A starter legitimately carries 2.1 MB
+    # of fonts and vendored moments beside its source, and measuring those bytes against a
+    # 300 KB *text* budget rejected the whole tree before a single file was read. The budget
+    # that matters is the text the caller receives, which is counted below.
+    for path in files_under(root, limit=MAX_ARTIFACT):
+        name = path.name
+        relative = path.relative_to(root).as_posix()
+        if name in locks:
+            omitted.append(relative)
+            continue
+        try:
+            content = path.read_text()
+        except UnicodeDecodeError:
+            # Not text: a font, a photograph, a build binary. Named, not guessed at.
+            omitted.append(relative)
+            continue
+        text_bytes += len(content.encode())
+        if text_bytes > 300_000:
+            raise ValueError("Text context exceeds 300 KB (excluding lockfiles and binary files)")
+        result[relative] = content
+    if omitted:
+        # A single reserved key explains the omission. It cannot collide with a real path: a
+        # generated product never contains a file whose name is parenthesised prose.
+        result[OMITTED_KEY] = (
+            "Not shown as text: " + ", ".join(sorted(omitted)[:50])
+            + (" ..." if len(omitted) > 50 else ""))
     return result
 
 

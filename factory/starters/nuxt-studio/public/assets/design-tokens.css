@@ -79,13 +79,18 @@
      curve, which must not be re-pointed (an entrance on a travel curve reads as hesitant) */
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
-  /* page furniture the layers measure against: a fixed header's height, the phone action bar,
-     the content gutter and the hairline colour. Zero is the honest default here - a page in
-     this stack decides its own header, and a layer that assumed `system.css`'s 72px would
-     offset a moment against a header it cannot see. A page overrides these on `:root` when it
-     has a fixed header, which the dealer's block tells it to do when it deals a sticky nav. */
-  --nav: 0px;
-  --nav-h: var(--p-nav-height, 0px);
+  /* Page furniture the layers measure against: a fixed header's height, the phone action bar,
+     the content gutter and the hairline colour.
+
+     `--nav` defaults to the 72px the skill's own layers assume, and NOT to 0. Measured with a
+     real sticky header: the moment CSS reserves `var(--nav, var(--nav-h, 72px))`, so defining
+     `--nav: 0px` here silently defeats that fallback and the chapter heading renders 32px from
+     the top of the viewport, hidden behind a 73px header (`overlapped: true`). Over-reserving
+     for a page that turns out to have no header costs 72px of whitespace; under-reserving hides
+     a heading behind one, which is a defect an operator sees. A page with no sticky header
+     sets `--p-nav-height: 0px`, which the dealer's block tells it to do. */
+  --nav: var(--p-nav-height, 72px);
+  --nav-h: var(--p-nav-height, 72px);
   --bar: 0px;
   --gutter: 24px;
   --line: color-mix(in oklab, var(--p-ink, #111111) 16%, transparent);

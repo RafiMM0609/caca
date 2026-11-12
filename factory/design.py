@@ -297,7 +297,8 @@ class DesignDealer:
             }
         moments = self.moments_for(kind, has_photo, seed)
         deal.moments = [{"id": m.get("id"), "name": m.get("name"), "kind": m.get("kind"),
-                         "trigger": m.get("trigger"), "look": m.get("look"),
+                         "trigger": m.get("trigger"),
+                         "look": _first_sentence(m.get("look", "")),
                          "needs": m.get("needs") or {}, "cost": m.get("cost"),
                          "webgl": m.get("webgl")} for m in moments]
         if not deal.moments:
@@ -305,6 +306,27 @@ class DesignDealer:
                 f"No moment in the library lists the page kind {kind!r}, so this page has "
                 "none. Do not invent a scroll animation to fill the gap.")
         return deal
+
+
+def _first_sentence(text: str, limit: int = 320) -> str:
+    """The first sentence or two of a skill's description, cut at a word boundary.
+
+    The `look` fields in the moment index are written for the skill's own dealer report, and
+    carry bookkeeping a worker does not need - "the print look is not dealt: tech leaves this
+    moment out, so it is kept only as opts look print" is an instruction to the *skill*, not to
+    the page builder. `photo-chapters`'s description is 551 characters and `picture-develops`'s
+    is 503; every one is repeated on every run of the task that carries it, so the trim is a
+    prompt-cost saving on the design task, not cosmetic tidying.
+    """
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    for stop in (". ", "; "):
+        at = cut.rfind(stop)
+        if at > limit // 2:
+            return cut[:at + 1].strip()
+    return cut.rsplit(" ", 1)[0].rstrip(",;:") + " ..."
 
 
 def deal_blocks(deal: Deal) -> str:
@@ -350,6 +372,15 @@ def deal_blocks(deal: Deal) -> str:
                      "animation, parallax, marquee or reveal: the vendored layer already "
                      "provides the hero entrance and the hover/press states, and a hand-written "
                      "one fights it.")
+        # The pinned moments reserve space for a fixed header using `var(--nav)`, which the
+        # token bridge defaults to the skill's own 72px. A page whose header is a different
+        # height must say so, or the section's heading is computed against the wrong offset.
+        # Measured: with the bridge at 0, a 73px sticky header covered the chapter heading.
+        lines.append("    - If the page has a sticky or fixed header, set --p-nav-height on "
+                     "`:root` to that header's exact height in px. The moment reserves space "
+                     "for a 72px header by default, and a different height will either leave a "
+                     "gap or hide the section's heading behind the header. A page with no "
+                     "sticky header sets --p-nav-height: 0px.")
     for note in deal.notes:
         lines.append(f"- Note: {note}")
     return "\n".join(lines)
