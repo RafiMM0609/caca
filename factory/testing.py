@@ -408,9 +408,23 @@ def run_suite(suite, base_url, evidence: Path, timeout=120, cancelled=lambda: Fa
                         elif action.action == "expect_count":
                             expect(page.locator(action.selector)).to_have_count(action.count, timeout=duration * 1000)
                         elif action.action == "expect_url":
-                            actual, wanted = urlsplit(page.url), urlsplit(case_url + action.value)
-                            assert (actual.path, actual.query) == (wanted.path, wanted.query), \
-                                f"Expected path {wanted.path}, observed {actual.path}"
+                            # A client-side router changes `page.url` after the click returns, so
+                            # reading it once asserted against the previous page. That failed a
+                            # correct Nuxt application: the click was right, the URL had simply not
+                            # moved yet, and the repair loop then "fixed" a page that was never
+                            # broken. `to_have_url` polls until the URL matches or `duration`
+                            # expires, so an application that navigates settles in about 100ms
+                            # while one that never navigates still fails, at the deadline.
+                            #
+                            # Compared as path plus query and matched against the URL's tail, so
+                            # the origin is ignored exactly as before. A contract that names no
+                            # query accepts a page that adds one (a tracking parameter is not a
+                            # contract violation); a contract that names a query still demands it.
+                            wanted = urlsplit(case_url + action.value)
+                            tail = re.escape(wanted.path) + (
+                                re.escape("?" + wanted.query) if wanted.query else r"(\?.*)?")
+                            expect(page).to_have_url(re.compile(tail + "$"),
+                                                     timeout=duration * 1000)
                     if case.kind == "browser":
                         # An uncaught exception is a real defect; a blocked external resource is our own policy.
                         real_console = [text for text in console_errors if not ignorable_console(text)]

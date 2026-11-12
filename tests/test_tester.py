@@ -406,3 +406,100 @@ def test_fill_targets_the_first_match_in_a_repeated_row(tmp_path):
         assert report["status"] == "passed", report
     finally:
         server.shutdown()
+
+
+# A client-side router (Nuxt, Next, any SPA) changes the URL after the click handler returns, so
+# the URL at the instant `click` finishes is still the old page. Reading `page.url` once asserted
+# against the previous route and failed a correct application: the Gowes Bareng build navigated
+# properly, the tester saw "/", and the repair loop then "fixed" a page that was never broken.
+SLOW_NAV = '''<!doctype html><html><body>
+<a data-testid="go" href="/forum">go</a>
+<script>
+document.querySelector('[data-testid="go"]').addEventListener('click', function (e) {
+  e.preventDefault();
+  setTimeout(function () { history.pushState({}, '', '/forum'); }, 80);
+});
+</script></body></html>'''
+
+
+QUERY_NAV = '''<!doctype html><html><body>
+<a data-testid="go" href="/forum">go</a>
+<script>
+document.querySelector('[data-testid="go"]').addEventListener('click', function (e) {
+  e.preventDefault();
+  setTimeout(function () { history.pushState({}, '', '/forum?ref=hero'); }, 80);
+});
+</script></body></html>'''
+
+
+def test_expect_url_waits_for_a_client_side_navigation(tmp_path):
+    """The assertion must poll: at the instant `click` returns the URL has not moved yet."""
+    server, base = _serve_static(tmp_path, SLOW_NAV)
+    try:
+        report = _run(tmp_path, base, [{
+            "flow_id": "nav", "name": "SPA navigation settles", "kind": "browser",
+            "actions": [{"action": "goto"},
+                        {"action": "click", "selector": "[data-testid='go']"},
+                        {"action": "expect_url", "value": "/forum"}],
+        }])
+        assert report["status"] == "passed", report
+    finally:
+        server.shutdown()
+
+
+def test_expect_url_accepts_a_query_the_contract_does_not_name(tmp_path):
+    """A tracking parameter is not a contract violation; the path is what the contract states."""
+    server, base = _serve_static(tmp_path, QUERY_NAV)
+    try:
+        report = _run(tmp_path, base, [{
+            "flow_id": "nav", "name": "Query added by the page", "kind": "browser",
+            "actions": [{"action": "goto"},
+                        {"action": "click", "selector": "[data-testid='go']"},
+                        {"action": "expect_url", "value": "/forum"}],
+        }])
+        assert report["status"] == "passed", report
+    finally:
+        server.shutdown()
+
+
+def test_expect_url_still_fails_when_the_page_never_navigates(tmp_path):
+    """Polling must not turn a missing navigation into a pass."""
+    server, base = _serve_static(tmp_path, SLOW_NAV)
+    try:
+        with pytest.raises(Exception):
+            _run(tmp_path, base, [{
+                "flow_id": "nav", "name": "Never navigates", "kind": "browser",
+                "actions": [{"action": "goto"},
+                            {"action": "click", "selector": "[data-testid='go']"},
+                            {"action": "expect_url", "value": "/settings"}],
+            }])
+    finally:
+        server.shutdown()
+
+
+def test_expect_url_still_demands_a_query_the_contract_names(tmp_path):
+    """The tolerance added for an unnamed query must not drop a required one.
+
+    The page lands on `/forum?ref=hero`; a contract naming `/forum?ref=other` must fail, and one
+    naming `/forum?ref=hero` must pass. Both directions matter: the first proves the query is
+    still asserted, the second proves the regex escape did not swallow a legitimate match.
+    """
+    server, base = _serve_static(tmp_path, QUERY_NAV)
+    try:
+        report = _run(tmp_path, base, [{
+            "flow_id": "nav", "name": "Contract names the query that arrives", "kind": "browser",
+            "actions": [{"action": "goto"},
+                        {"action": "click", "selector": "[data-testid='go']"},
+                        {"action": "expect_url", "value": "/forum?ref=hero"}],
+        }])
+        assert report["status"] == "passed", report
+
+        with pytest.raises(Exception):
+            _run(tmp_path, base, [{
+                "flow_id": "nav", "name": "Contract names a different query", "kind": "browser",
+                "actions": [{"action": "goto"},
+                            {"action": "click", "selector": "[data-testid='go']"},
+                            {"action": "expect_url", "value": "/forum?ref=other"}],
+            }])
+    finally:
+        server.shutdown()
