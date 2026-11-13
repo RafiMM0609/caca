@@ -85,6 +85,12 @@ class _Nesting:
 
     VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
             "param", "source", "track", "wbr"}
+    # Elements that exist in the template but never in the rendered DOM, so they cannot be a
+    # real parent. Measured false positive: a moment written as a direct child of `<main>` but
+    # inside Vue's `<template v-if>` was reported as "inside <template>", while the browser
+    # rendered its parent as MAIN. `<slot>` is the same kind of construct.
+    TRANSPARENT = {"template", "slot", "component", "transition", "transition-group",
+                   "keep-alive", "teleport", "suspense"}
     TAG = re.compile(r"<(/?)([A-Za-z][\w-]*)((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)(/?)>", re.S)
 
     def __init__(self, text: str):
@@ -118,7 +124,9 @@ class _Nesting:
                         pass
                 continue
             if "data-moment" in attrs and re.search(r'data-moment\s*=\s*["\']', attrs):
-                self.moment_parents.append((match.start(), list(self.stack)))
+                # Report the nearest ancestor that will actually exist in the DOM.
+                stack = [tag for tag in self.stack if tag not in self.TRANSPARENT]
+                self.moment_parents.append((match.start(), stack))
             if selfclose or name in self.VOID:
                 continue
             self.stack.append(name)

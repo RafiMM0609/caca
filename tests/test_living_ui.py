@@ -500,3 +500,34 @@ def test_a_long_moment_description_is_cut_at_a_sentence():
     assert trimmed.startswith("First sentence here.")
     # A short description is never touched.
     assert _first_sentence("Short and whole.", limit=120) == "Short and whole."
+
+
+def test_a_vue_template_wrapper_is_not_treated_as_a_parent(tmp_path):
+    """Measured false positive: a correct page was failed by the gate on its own demo.
+
+    A moment written as a direct child of `<main>` but inside Vue's `<template v-if>` was
+    reported as "inside <template>", while the browser rendered its real parent as MAIN. A
+    `<template>` never exists in the DOM, so it cannot be a parent; failing a correct page is
+    the defect that teaches operators to ignore a gate.
+    """
+    result = run_gate(tmp_path, {
+        "nuxt.config.ts": "head: '/assets/moments/bundle.css'\n",
+        "app/pages/index.vue":
+            '<template><main><template v-if="site">'
+            '<figure data-moment="picture-develops"><img alt="" /></figure>'
+            '</template></main></template>\n',
+    })
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_wrapper_beside_a_vue_template_is_still_caught(tmp_path):
+    """The transparency fix must not blind the rule to a real wrapper."""
+    result = run_gate(tmp_path, {
+        "nuxt.config.ts": "head: '/assets/moments/bundle.css'\n",
+        "app/pages/index.vue":
+            '<template><main><div><template v-if="x">'
+            '<figure data-moment="picture-develops"><img alt="" /></figure>'
+            '</template></div></main></template>\n',
+    })
+    assert result.returncode == 1
+    assert "inside <div>" in result.stdout
