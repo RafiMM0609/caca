@@ -89,7 +89,8 @@ def test_the_plan_is_not_mutated_in_place():
 def client(tmp_path):
     settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
                         pi="/usr/bin/true", model="test/model",
-                        profiles={"dash": {"image": IMAGE, "verify_argv": ["true"],
+                        profiles={"dash": {"runner": "native", "commands": [["true"]],
+                                           "artifact_dir": "index.html",
                                            "tester": True, "checks_dir": str(tmp_path)}})
     settings.validate()
     store = Store(tmp_path / "factory.sqlite3")
@@ -150,7 +151,8 @@ def test_empty_answers_are_rejected_by_the_schema(client):
 def test_answering_requires_the_operator_token(tmp_path):
     settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
                         pi="/usr/bin/true", model="test/model",
-                        profiles={"dash": {"image": IMAGE, "verify_argv": ["true"],
+                        profiles={"dash": {"runner": "native", "commands": [["true"]],
+                                           "artifact_dir": "index.html",
                                            "tester": True, "checks_dir": str(tmp_path)}})
     settings.validate()
     anonymous = TestClient(create_app(settings))

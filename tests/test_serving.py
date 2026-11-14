@@ -126,8 +126,7 @@ def test_a_queued_serve_job_is_not_picked_up_by_the_build_lane(store, project):
 def client(tmp_path):
     settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
                         pi="/usr/bin/true", model="test/model",
-                        profiles={"dash": {"image": IMAGE, "verify_argv": ["true"],
-                                           "checks_dir": str(tmp_path)}})
+                        profiles={"dash": {"runner": "native", "commands": [["true"]], "artifact_dir": "index.html", "checks_dir": str(tmp_path)}})
     settings.validate()
     app = create_app(settings)
     with TestClient(app) as test_client:
@@ -209,8 +208,7 @@ def test_stop_removes_the_record_so_the_lane_can_release_the_process(client):
 def test_serving_requires_the_operator_token(tmp_path):
     settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
                         pi="/usr/bin/true", model="test/model",
-                        profiles={"dash": {"image": IMAGE, "verify_argv": ["true"],
-                                           "checks_dir": str(tmp_path)}})
+                        profiles={"dash": {"runner": "native", "commands": [["true"]], "artifact_dir": "index.html", "checks_dir": str(tmp_path)}})
     anonymous = TestClient(create_app(settings))
     assert anonymous.post("/api/projects/x/serve").status_code == 401
     assert anonymous.get("/api/apps").status_code == 401

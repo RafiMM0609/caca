@@ -28,9 +28,22 @@ def test_reject_bad_dependency_order(plan):
         Plan.model_validate(data)
 
 
-def test_moving_image_tag_forbidden():
+def test_a_docker_profile_is_rejected_with_a_clear_message():
+    """Docker support was removed; an image-based profile must fail loudly, not be reinterpreted.
+
+    The runner field keeps a single legal value, so a config that still says "docker" gets an
+    explicit error naming the field instead of silently running natively with an unused image.
+    """
+    with pytest.raises(ValueError):
+        Profile(runner="docker", commands=[["true"]], artifact_dir="x")
     with pytest.raises(ValueError):
         Profile(image="python:latest", verify_argv=["true"], checks_dir="/checks")
+
+
+def test_a_native_profile_that_declares_an_image_is_rejected():
+    """`image`/`verify_argv` are dead fields now, so supplying them is a configuration mistake."""
+    with pytest.raises(ValueError):
+        Profile(runner="native", commands=[["true"]], artifact_dir="x", image="python@sha256:" + "a" * 64)
 
 
 @pytest.mark.parametrize("kind", ["symlink", "hardlink", "parent", "duplicate", "oversize"])

@@ -228,8 +228,10 @@ def test_the_stream_route_is_async_so_it_cannot_exhaust_the_threadpool():
     settings = Settings(
         data=Path("/tmp/unused-stream-test"), operator_token="o" * 40, release_token="r" * 40,
         model="test/model", pi="/usr/bin/true",
-        profiles={"static": Profile(image="python@sha256:" + "a" * 64, verify_argv=["true"],
-                                    checks_dir=str(root / "checks"))})
+        profiles={"static": Profile(runner="native", commands=[["true"]],
+                                    artifact_dir="index.html",
+                                    checks_dir=str(root / "checks"),
+                                    checks_argv=[["python3", str(root / "checks" / "div_scan.py")]])})
     settings.validate()
     app = create_app(settings)
     stream_route = next(r for r in app.routes

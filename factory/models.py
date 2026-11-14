@@ -252,8 +252,13 @@ def _validate_profile_env(env: dict[str, str]) -> None:
 
 
 class Profile(StrictModel):
-    runner: Literal["docker", "native"] = "docker"
+    # Native only. The `docker` runner was removed: it required a pinned image per profile, a
+    # bind-mounted source tree and a base64 artifact round-trip through the container's stdout,
+    # and it was never the validated path. `runner` is kept as a field with one legal value so an
+    # older config that still says "docker" fails loudly instead of being silently reinterpreted.
+    runner: Literal["native"] = "native"
     commands: list[list[str]] = Field(default_factory=list, max_length=20)
+    # Retained so an old config loads with a clear error rather than an "extra field" one.
     image: str = ""
     verify_argv: list[str] = Field(default_factory=list, max_length=50)
     artifact_dir: str = "dist"
@@ -279,10 +284,12 @@ class Profile(StrictModel):
     def validate_profile(self):
         safe_path(self.artifact_dir)
         _validate_profile_env(self.env)
-        if self.tester and (self.runner != "native" or not self.serve_argv):
-            raise ValueError("Tester currently requires native runner and serve_argv")
-        if self.studio and self.runner != "native":
-            raise ValueError("Local Studio requires a native profile")
+        if self.image or self.verify_argv:
+            raise ValueError(
+                "Docker profiles are no longer supported (image/verify_argv are unused). "
+                "Set \"runner\": \"native\" with `commands` and `checks_argv` instead.")
+        if self.tester and not self.serve_argv:
+            raise ValueError("Tester requires serve_argv so the app can be started")
         if not self.readiness_path.startswith("/") or self.readiness_path.startswith("//"):
             raise ValueError("Readiness must use an application-relative URL")
         if self.runner == "native":
@@ -299,11 +306,7 @@ class Profile(StrictModel):
                 raise ValueError("Native checks_dir requires checks_argv; a checks directory "
                                  "with no checks runs nothing while appearing validated")
             return self
-        if not self.verify_argv or not self.checks_dir:
-            raise ValueError("Docker profiles require checks and verify_argv")
-        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9./:_-]*@sha256:[a-f0-9]{64}", self.image):
-            raise ValueError("Verification image must be pinned by sha256 digest")
-        return self
+        raise ValueError("Only the native runner is supported")
 
 
 class Target(StrictModel):

@@ -31,8 +31,8 @@ When two documents disagree, the handoff's **dated evidence** wins and the other
 
 ## Current boundaries
 
-- Validated execution target: Linux, Python 3.12+, Node 24, SQLite. Native execution requires `FACTORY_ALLOW_NATIVE=1`. Docker remains an optional verification profile.
-- Windows was explicitly requested for local laptop use but is unfinished. Preserve the outstanding Windows goal; do not claim it works or silently make Docker mandatory.
+- Validated execution target: Linux, Python 3.12+, Node 24, SQLite. Native execution requires `FACTORY_ALLOW_NATIVE=1`. Docker support was **removed**; there is one runner.
+- Windows was explicitly requested for local laptop use but is unfinished. Preserve the outstanding Windows goal; do not claim it works and do not reintroduce a container runner to work around it.
 - SQLite owns workflow state, including the `workers` table. Product **code** lives in per-product git repositories under `data/products/<id>`, not in SQLite. Optional Memorix owns advisory project memory. Do not confuse these stores.
 - Oh My Pi was the original runtime choice and is gone. The runtime is the public **Pi 1.5.0 CLI** (`@earendil-works/pi-coding-agent`), configured as `FACTORY_PI` / `settings.pi`. It has two roles: a real coding harness for tasks, and a tool-free structured client for the other stages. Credentials resolve through provider environment variables, including `OPENCODE_API_KEY` for the OpenCode Go subscription. Do not reintroduce `omp` names.
 - Products are separated by repository and directory, not by login. There is one operator and no tenant authorization; clients do not log in. Do not describe this release as multi-tenant.
@@ -45,7 +45,7 @@ When two documents disagree, the handoff's **dated evidence** wins and the other
 
 - Inspect `git status` first. Preserve user work, prior verified artifacts, source snapshots, plan revisions and draft files. Never force-push or silently discard edits.
 - Keep version checks and stale-approval rejection. Changes after a successful workflow must produce a new job/revision rather than mutating the verified source.
-- Never mark an artifact ready before required review/build/testing evidence passes. Native execution is not a sandbox; do not claim Docker's isolation or resource controls apply to it.
+- Never mark an artifact ready before required review/build/testing evidence passes. Native execution is not a sandbox; do not describe it as one.
 - Commands come from administrator-owned profiles as argv arrays. Avoid shell interpolation. Preserve deadlines, output bounds, cancellation and descendant-process cleanup.
 - Worktree cleanup must remove a stale worktree still attached to a branch before that branch is deleted or reused; git refuses to recreate a worktree for an existing branch.
 - Keep model budgets reserved transactionally, including concurrent tester calls. Memory failures must remain visible and must not become workflow truth.
@@ -66,7 +66,6 @@ node --test tests/workers.test.cjs
 Optional and opt-in:
 
 ```sh
-FACTORY_TEST_DOCKER=1 uv run pytest tests/test_container.py -q        # Docker profile
 FACTORY_LIVE_WORKER=1 uv run pytest tests/test_worker.py -q           # real model worker
 FACTORY_ALLOW_NATIVE=1 uv run python scripts/validate_studio_journey.py  # full Nuxt journey
 ```

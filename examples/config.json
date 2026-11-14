@@ -1,12 +1,21 @@
 {
   "profiles": {
     "static": {
-      "image": "python@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df",
-      "verify_argv": ["python3", "/checks/static.py"],
-      "checks_dir": "/opt/software-factory/checks",
+      "runner": "native",
+      "commands": [
+        [
+          "true"
+        ]
+      ],
+      "artifact_dir": "index.html",
       "timeout": 300,
-      "memory_mb": 1024,
-      "cpus": 1
+      "checks_dir": "checks",
+      "checks_argv": [
+        [
+          "python3",
+          "{checks}/static.py"
+        ]
+      ]
     }
   },
   "targets": {}

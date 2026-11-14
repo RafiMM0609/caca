@@ -78,9 +78,7 @@ def test_the_job_records_the_explanation_as_an_event(tmp_path):
 
     settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
                         model="test/model", pi="/usr/bin/true",
-                        profiles={"dash": {"image": "python@sha256:" + "a" * 64,
-                                           "verify_argv": ["true"],
-                                           "checks_dir": str(tmp_path)}})
+                        profiles={"dash": {"runner": "native", "commands": [["true"]], "artifact_dir": "index.html"}})
     # `Settings(...)` stores profiles as given; convert them the way `from_env` does, because
     # the plan path calls `profile.model_dump()`.
     settings.profiles = {name: Profile.model_validate(raw)
@@ -120,9 +118,7 @@ def test_an_unexplained_failure_still_says_where_to_look(tmp_path):
 
     settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
                         model="test/model", pi="/usr/bin/true",
-                        profiles={"dash": {"image": "python@sha256:" + "a" * 64,
-                                           "verify_argv": ["true"],
-                                           "checks_dir": str(tmp_path)}})
+                        profiles={"dash": {"runner": "native", "commands": [["true"]], "artifact_dir": "index.html"}})
     # `Settings(...)` stores profiles as given; convert them the way `from_env` does, because
     # the plan path calls `profile.model_dump()`.
     settings.profiles = {name: Profile.model_validate(raw)

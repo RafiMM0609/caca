@@ -7,16 +7,22 @@ from factory.db import Store
 from factory.models import Plan, Profile, ProjectInput
 
 
-IMAGE = "python@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df"
 ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
 def settings(tmp_path):
+    # A native profile. Docker support was removed, so every fixture that used an image and
+    # `verify_argv` now declares `commands` and `checks_argv` instead. `commands=[['true']]`
+    # produces no files, which is why `artifact_dir` names the source file the fixture projects
+    # already carry rather than a build output directory.
     config = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
                       model="test/model", pi="/usr/bin/true",
-                      profiles={"static": Profile(image=IMAGE, verify_argv=["python3", "/checks/static.py"],
-                                                   checks_dir=str(ROOT / "checks"))})
+                      profiles={"static": Profile(runner="native",
+                                                   commands=[["true"]],
+                                                   artifact_dir="index.html",
+                                                   checks_dir=str(ROOT / "checks"),
+                                                   checks_argv=[["python3", str(ROOT / "checks" / "static.py")]])})
     config.validate()
     return config
 

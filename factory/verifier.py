@@ -1,7 +1,5 @@
-import base64
 import json
 import os
-import subprocess
 import shutil
 import tempfile
 import time
@@ -9,9 +7,7 @@ import sys
 from pathlib import Path
 
 from .process import run, ProcessError
-from .workspace import extract, clone_tree, clone_build_tree, files_under
-
-DOCKER = ["docker", "--host=unix:///var/run/docker.sock"]
+from .workspace import clone_tree, clone_build_tree, files_under
 
 # A relative checks_dir is anchored to the checkout containing this package, never to the caller's
 # working directory. Operators start the API and a scheduler from different shells; a CWD-relative
@@ -26,46 +22,30 @@ def resolve_checks_dir(profile) -> Path:
 
 
 class Verifier:
+    """Native-only entry point.
+
+    Docker support was removed deliberately. It was added when container isolation looked like
+    the only way to run a generated application safely, and it carried a real cost: a pinned
+    image per profile, `--pull=never` (so a missing image is a failed build), a bind-mounted
+    source tree, a base64 artifact round-trip through the container's stdout, and a second code
+    path whose behaviour had to be kept in step with the native one. The native path is what the
+    project actually runs, and it is the only path validated end to end.
+
+    Removing it also removes a false comfort: a container is not a boundary here either, because
+    the generated application is executed on the operator's own machine by design. See
+    `docs/operations.md` for what native execution does and does not isolate.
+    """
+
     def verify(self, profile, source: Path, output: Path, job_id, cancelled=lambda: False, **testing):
-        if profile.runner == "native":
-            return NativeVerifier().verify(profile, source, output, job_id, cancelled, **testing)
-        checks = resolve_checks_dir(profile)
-        if not checks.is_dir():
-            raise ValueError("Operator-owned checks directory is missing")
-        output.mkdir()
-        # Copy to an expendable container workspace; the approved source stays read-only.
-        name = "sf-" + job_id
-        script = Path(__file__).with_name("sandbox_runner.py").read_text()
-        argv = DOCKER + ["run", "--rm", "--init", "--name", name,
-                        "--label", "software-factory.job=" + job_id,
-                        "--pull=never", "--network=none", "--read-only", "--cap-drop=ALL",
-                        "--security-opt=no-new-privileges", "--pids-limit=128",
-                        "--memory=" + str(profile.memory_mb) + "m", "--cpus=" + str(profile.cpus),
-                        "--user", f"{os.getuid()}:{os.getgid()}",
-                        "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
-                        "--tmpfs", "/work:rw,nosuid,nodev,size=512m,mode=1777",
-                        "--tmpfs", "/output:rw,nosuid,nodev,size=64m,mode=1777",
-                        "--mount", f"type=bind,src={source.resolve()},dst=/source,readonly",
-                        "--mount", f"type=bind,src={checks},dst=/checks,readonly",
-                        "--env", "FACTORY_OUTPUT=/output", "--env", "PYTHONDONTWRITEBYTECODE=1",
-                        # The container has no persistent mount, so a profile env reaches the
-                        # build's configuration only. Persistence is a native-runner feature;
-                        # do not describe the Docker profile as stateful.
-                        *[arg for name, value in profile.env.items() for arg in ("--env", f"{name}={value}")],
-                        "--entrypoint", "python3", profile.image, "-c", script, *profile.verify_argv]
-        try:
-            response = json.loads(run(argv, timeout=profile.timeout, cancelled=cancelled, max_output=32_000_000))
-            extract(base64.b64decode(response["artifact"], validate=True), output)
-            return str(response["log"])[-100000:]
-        finally:
-            self.cleanup(job_id)
+        if profile.runner != "native":
+            raise ValueError(
+                "Only the native runner is supported; the docker runner was removed. "
+                "Set \"runner\": \"native\" in this profile.")
+        return NativeVerifier().verify(profile, source, output, job_id, cancelled, **testing)
 
     @staticmethod
-    def cleanup(job_id):
-        if not shutil.which("docker"):
-            return
-        subprocess.run(DOCKER + ["rm", "-f", "sf-" + job_id], capture_output=True, timeout=20)
-
+    def cleanup(job_id):  # kept so callers do not need a branch
+        return None
 
 
 class NativeVerifier:
@@ -208,6 +188,15 @@ class NativeVerifier:
             # links its server bundle's dependencies) and rejecting them failed a correct
             # application whose build and acceptance tests had both already passed.
             shipped = list(files_under(built, allow_symlinks=True))
+            # An existing but EMPTY output directory is not proof that a build ran. Measured: a
+            # profile whose only command was `["mkdir","-p","dist"]` satisfied `is_dir()` and the
+            # verifier passed, and a build command that silently produced nothing leaves the same
+            # empty directory behind. The Docker runner rejected an empty export; this is the
+            # native equivalent of that guard, and the listing was already being computed.
+            if not shipped:
+                raise ValueError(
+                    f"Build produced no output in {profile.artifact_dir}/ -- the configured "
+                    "commands did not create any files, so 'the build ran' is not proven")
             logs.append(f"BUILD OUTPUT: {len(shipped)} files in {profile.artifact_dir}/ "
                         f"(not published; the artifact is the source tree)")
             if output is not None:
