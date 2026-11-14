@@ -136,6 +136,27 @@ with a fresh ledger and resumes from the tasks already merged.
 uv run factory doctor    # resolved Pi path, model, profiles, and every check each profile runs
 ```
 
+## The dashboard
+
+The operator UI is FastAPI plus one static HTML/CSS/JS shell — no build step, no framework, no
+`node_modules` on the host. It is deliberately plain: the expensive part of this system is
+`npm ci`, `nuxt build` and Chromium, so a frontend toolchain would add weight to a 2 GB box and
+buy nothing.
+
+Two things about it are worth knowing before changing it:
+
+- **The UI is Indonesian.** The operator reads Indonesian, and the shell had drifted into mixed
+  English chrome with Indonesian notices. `label()` maps every machine state (`awaiting_plan`,
+  `changes_requested`) to an Indonesian label, because printing a raw state at the operator is
+  how "None" ended up meaning "no draft yet".
+- **Events are live.** `GET /api/projects/<id>/stream` is a resumable server-sent event stream
+  keyed on the global event `seq`, read with `fetch()` rather than `EventSource` because this API
+  is bearer-only and `EventSource` cannot send an `Authorization` header. Everything else the
+  dashboard needs still polls, with backoff, and stops entirely while the tab is hidden. If the
+  stream cannot connect it falls back to cursor polling — slower, not broken. See
+  [operations](docs/operations.md#live-updates-and-the-reverse-proxy) before putting a proxy in
+  front of it.
+
 ## Visual editing and the independent tester
 
 The dashboard integrates local Nuxt Studio drafts and an independent tester that prepares API/browser cases while workers implement. Editing is scoped to schema-backed content, not arbitrary Vue source. See [Studio setup, journey and limits](docs/studio-and-tester.md).
@@ -165,6 +186,6 @@ node --check factory/static/workers.js
 node --test tests/workers.test.cjs
 ```
 
-Optional: `FACTORY_TEST_DOCKER=1 uv run pytest tests/test_container.py -q` for the Docker profile, and `FACTORY_LIVE_WORKER=1 uv run pytest tests/test_worker.py -q` for a real model worker call. Browser tests need `uv run playwright install chromium` or `FACTORY_CHROMIUM=/path/to/chromium`.
+Optional: `FACTORY_TEST_DOCKER=1 uv run pytest tests/test_container.py -q` for the Docker profile, and `FACTORY_LIVE_WORKER=1 uv run pytest tests/test_worker.py -q` for a real model worker call. Browser tests need `uv run playwright install chromium` or `FACTORY_CHROMIUM=/path/to/chromium`. Add `FACTORY_UI_TEST=1` to run the dashboard browser smoke test (~390 MB for Chromium; keep it out of the build lane — see [operations](docs/operations.md#optional-browser-test)).
 
 Model responses in the default suite are scripted test doubles. Passing those tests is not evidence of live AI generation. The live runs recorded in the handoff are dated and separate. Dependencies are locked in `uv.lock`.

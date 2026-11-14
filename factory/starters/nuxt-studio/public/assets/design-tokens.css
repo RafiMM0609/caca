@@ -1,0 +1,99 @@
+/*
+  Bridge: the skill's material tokens, fed from the page's own palette.
+
+  The vendored moment and motion layers were written for `system.css`, which names its colours
+  and spacing `--bg`, `--ink`, `--accent`, `--s-2`, `--t-h2` and so on. A Nuxt page deals its
+  palette as `--p-bg`, `--p-ink`, ... (the names `start.mjs css` prints), because `system.css`
+  also sets a lit ground, a rhythm and a type scale a page in this stack does not load.
+
+  Measured, without this file: a page that mounts a moment renders it unstyled - the moment's
+  own CSS is loaded but every `var(--bg)` resolves to nothing, so photo-chapters shows its
+  panel with no ground and word-highlight cannot dim its words. That failure is silent; the
+  checker reports only `moment-none`, because the element is there and simply looks wrong.
+
+  So this file is the single place where the two naming schemes meet. It is deliberately
+  aliases only: no colour is invented, no page loads it and gets a house style it did not deal.
+  A page that already sets a value wins, because every line here is a `var()` fallback with the
+  page's own token as the fallback, not a fixed value.
+*/
+
+:root {
+  /* colour: the page's palette, under the names the vendored layers read */
+  --bg: var(--p-bg, #ffffff);
+  --surface: var(--p-surface, #f4f4f4);
+  --ink: var(--p-ink, #111111);
+  --muted: var(--p-muted, #6b6b6b);
+  --accent: var(--p-accent, #1a4be0);
+  --accent-ink: var(--p-accent-ink, #ffffff);
+  --action: var(--p-action, var(--p-accent, #1a4be0));
+  --action-ink: var(--p-action-ink, var(--p-accent-ink, #ffffff));
+
+  /* the inverted band a closing footer uses */
+  --inv-bg: var(--p-inv-bg, #111111);
+  --inv-surface: var(--p-inv-surface, #1c1c1c);
+  --inv-ink: var(--p-inv-ink, #f4f4f4);
+  --inv-muted: var(--p-inv-muted, #a3a3a3);
+  --inv-accent: var(--p-inv-accent, #ffffff);
+  --inv-accent-ink: var(--p-inv-accent-ink, #111111);
+  --inv-action: var(--p-inv-action, #ffffff);
+  --inv-action-ink: var(--p-inv-action-ink, #111111);
+
+  /* type: the dealt pairing, under the names the layers read */
+  --font-display: var(--p-font-display, "Source Serif 4", Georgia, serif);
+  --font-text: var(--p-font-text, "Libre Franklin", system-ui, sans-serif);
+  --font-mono: var(--p-font-mono, ui-monospace, "SFMono-Regular", Menlo, monospace);
+  --display-weight: var(--p-display-weight, 400);
+  --display-tracking: var(--p-display-tracking, -0.02em);
+
+  /* the type scale: fixed here, because the layers size a moment's statement and a chapter
+     title from it and a page in this stack sets its own sizes in its own stylesheet. These are
+     the values system.css uses, so a moment written against that scale keeps its proportions. */
+  --t-label: 13px;
+  --t-small: 14px;
+  --t-body: 16px;
+  --t-lead: 18px;
+  --t-card: 18px;
+  --t-h3: 24px;
+  --t-h2: clamp(30px, 1.72vw + 23.3px, 48px);
+  --t-h1: clamp(38px, 3.24vw + 25.4px, 72px);
+  --t-stat: clamp(28px, 0.952vw + 24.29px, 38px);
+
+  /* spacing: the skill's 4/8 scale, which the moment CSS reads for its panel and its gaps */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+  --s-9: 96px;
+  --s-10: 128px;
+
+  /* radii: a page in this stack deals square or soft, and the layers clamp to these */
+  --r-btn: var(--p-radius, 0px);
+  --r-md: var(--p-radius-md, 0px);
+  --r-lg: var(--p-radius-lg, 0px);
+
+  /* the one UI ease-out the motion layer reads; the moment layer keeps its own entrance
+     curve, which must not be re-pointed (an entrance on a travel curve reads as hesitant) */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Page furniture the layers measure against: a fixed header's height, the phone action bar,
+     the content gutter and the hairline colour.
+
+     `--nav` defaults to the 72px the skill's own layers assume, and NOT to 0. Measured with a
+     real sticky header: the moment CSS reserves `var(--nav, var(--nav-h, 72px))`, so defining
+     `--nav: 0px` here silently defeats that fallback and the chapter heading renders 32px from
+     the top of the viewport, hidden behind a 73px header (`overlapped: true`). Over-reserving
+     for a page that turns out to have no header costs 72px of whitespace; under-reserving hides
+     a heading behind one, which is a defect an operator sees. A page with no sticky header
+     sets `--p-nav-height: 0px`, which the dealer's block tells it to do. */
+  --nav: var(--p-nav-height, 72px);
+  --nav-h: var(--p-nav-height, 72px);
+  --bar: 0px;
+  --gutter: 24px;
+  --line: color-mix(in oklab, var(--p-ink, #111111) 16%, transparent);
+  /* a lit ground behind UI: none on a page in this stack, which is flat by design */
+  --ground-bg: var(--p-surface, #f4f4f4);
+}

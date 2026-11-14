@@ -9,10 +9,19 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# Upper bound for one task's instructions.
+#
+# `apply_answers` appends every operator decision to every task's instructions, and `AnswersInput`
+# caps the map at 30 answers with no per-answer length limit. At 12000 the merged block could
+# already exceed the field: a handful of long answers pushed a task past the cap and the answered
+# plan failed validation, surfacing as a 422 that named nothing. Raised to 24000 (~30 answers of
+# 700 characters plus the original instructions) so the normal case never truncates.
+INSTRUCTIONS_MAX_LENGTH = 24000
+
 class Task(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,47}$")
     title: str = Field(min_length=3, max_length=200)
-    instructions: str = Field(min_length=10, max_length=12000)
+    instructions: str = Field(min_length=10, max_length=INSTRUCTIONS_MAX_LENGTH)
     acceptance: list[str] = Field(min_length=1, max_length=30)
     depends_on: list[str] = Field(default_factory=list, max_length=30)
     # Vendored design skills this worker should load, by directory name under `skills/`.
@@ -32,10 +41,25 @@ class Task(StrictModel):
         return value
 
 
+# Upper bound for one acceptance flow's goal sentence.
+#
+# Raised from 2000 to 8000 (2026-11-14). `apply_answers` appends the operator's decisions to
+# every flow goal, and six detailed answers measured 1854 characters on their own — enough to
+# push a normal goal past 2000 and make the answered plan fail validation, which surfaced to the
+# operator only as a 422 "invalid content". The number was also inconsistent with the fields it
+# sits beside: `instructions` and `summary` are capped at 12000 and `brief` at 20000, so 2000 was
+# the tightest limit in the model for text that accumulates operator decisions.
+#
+# 8000 is chosen to fit roughly 25 short operator answers, which is the schema's own
+# `max_length=30` on the answers map, without truncating any of them. It is not unbounded: a goal
+# is sent to the tester on every case, so it must stay the size of a paragraph, not a document.
+GOAL_MAX_LENGTH = 8000
+
+
 class AcceptanceFlow(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,47}$")
     kind: Literal["api", "browser"]
-    goal: str = Field(min_length=10, max_length=2000)
+    goal: str = Field(min_length=10, max_length=GOAL_MAX_LENGTH)
     steps: list[str] = Field(min_length=1, max_length=20)
     # Semantic name -> CSS selector, declared once in the plan and shared by the workers that
     # implement the page and the tester that drives it. Without a single source of truth the

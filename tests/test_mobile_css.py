@@ -54,10 +54,56 @@ def test_the_pipeline_wraps_on_a_phone():
     assert ".pipeline{display:grid" in mobile.replace(" ", "")
 
 
+def resolved_size(value):
+    """Turn a `font-size` value into pixels, following the `--text-*` token if it is one.
+
+    The stylesheet moved its sizes into custom properties, so asserting the literal `16px` in a
+    rule now fails even when the effective size is correct. What matters is the computed value,
+    not how it is spelled, so this resolves the token the same way the browser would.
+    """
+    import re
+
+    match = re.fullmatch(r"var\((--[a-z0-9-]+)\)", value.strip())
+    if not match:
+        return float(value.strip().removesuffix("px"))
+    declared = re.search(re.escape(match.group(1)) + r"\s*:\s*([0-9.]+)px", CSS)
+    assert declared, f"{match.group(1)} is used but never declared"
+    return float(declared.group(1))
+
+
 def test_text_inputs_use_a_size_that_does_not_zoom_ios():
-    """Safari zooms the page when a focused input is under 16px."""
-    mobile = CSS[CSS.index("@media(max-width:650px)"):]
-    assert "font-size:16px" in mobile
+    """Safari zooms the page when a focused input is under 16px.
+
+    Every element that can take keyboard focus and be typed into must resolve to 16px or more:
+    `input`, `textarea` and `select` themselves, and any rule that targets one by id or class.
+    The check resolves `--text-*` tokens because the stylesheet declares its scale once; a
+    literal-only assertion failed here for the wrong reason after that refactor, and it also
+    missed a real regression (`#plan-editor`, a `<textarea>`, was set to the 13px code tier).
+    """
+    import re
+
+    sizes = []
+
+    # Any rule whose selector names a form element, by tag or by id.
+    for rule in re.finditer(r"([^{}]+)\{([^}]*)\}", CSS):
+        selector, body = rule.group(1), rule.group(2)
+        declared = re.search(r"font-size:([^;}]+)", body)
+        if not declared:
+            continue
+        # `select` as a *substring* also matches `.selector`, which is a grid of code pairs and
+        # not a form control. Match the tag or a form-ish id, never a bare substring.
+        if re.search(r"(^|[\s,>+~])(input|textarea|select)([\s,{:.\[]|$)", selector) \
+                or re.search(r"#(plan-editor|brief|token|name|release-token|answer-)", selector):
+            sizes.append((resolved_size(declared.group(1)), selector.strip()[:50]))
+
+    # Inputs with no rule of their own inherit from body, so body is the floor for them.
+    body = re.search(r"body\{[^}]*font-size:([^;}]+)", CSS)
+    assert body, "body must declare a font-size"
+    sizes.append((resolved_size(body.group(1)), "body (inherited)"))
+
+    assert sizes, "no form sizing found; the assertion below would be vacuous"
+    too_small = [(size, selector) for size, selector in sizes if size < 16]
+    assert not too_small, f"form text under the 16px floor: {too_small}"
 
 
 def test_dialogs_fit_a_narrow_screen():

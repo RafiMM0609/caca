@@ -16,3 +16,7 @@ dist/
 skills/**/.taste-skill/
 skills/**/.taste-pro/
 
+
+# Downloaded font cache for scripts/vendor_design_assets.py. The vendored woff2 files it
+# writes into the starter ARE committed (2.1 MB, once); this is only the re-download cache.
+.cache/

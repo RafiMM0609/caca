@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import hmac
+import logging
 import re
 import json
 import shutil
@@ -9,8 +10,11 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
+
+import anyio
 
 from .config import Settings
 from .db import Conflict, Store
@@ -20,6 +24,8 @@ from .models import DeployInput, Plan, ProjectInput, StrictModel
 from .answers import apply_answers
 from .workspace import snapshot
 from .studio import Studio
+from .stream import EVENTS_SQL, MAX_BATCH, event_frames
+from . import observe
 
 
 class PlanUpdate(StrictModel):
@@ -46,10 +52,19 @@ def create_app(settings=None):
 
     app = FastAPI(lifespan=lifespan, title="Anton Software Factory", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store, app.state.settings = store, settings
+    # The dashboard polls JSON that is dominated by planner prose, and a plan is ~30 KB per
+    # project. Compression is applied to responses only; it never touches what the operator
+    # reads in the UI. minimum_size keeps the tiny /healthz and 304-sized bodies unencoded.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     attempts = defaultdict(deque)
 
     @app.middleware("http")
     async def guards(request: Request, call_next):
+        # Correlation id: echoed to the client so a reported failure can be found in the log
+        # without asking the operator to reproduce it.
+        request_id = observe.new_request_id(request.headers.get(observe.REQUEST_ID_HEADER))
+        request.state.request_id = request_id
+        began = time.perf_counter()
         if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             origin = request.headers.get("origin")
             if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
@@ -60,13 +75,30 @@ def create_app(settings=None):
                 if len(body) > 256000:
                     return JSONResponse({"detail": "Request body exceeds limit"}, status_code=413)
             request._body = bytes(body)
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            # A crash must leave a trace with the id the client was given, otherwise the 500 the
+            # operator saw is untraceable.
+            observe.log_event("http.error", level=logging.ERROR, request_id=request_id,
+                              method=request.method, path=request.url.path,
+                              error=type(exc).__name__, ms=round((time.perf_counter() - began) * 1000, 1))
+            raise
         response.headers.update({
             "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
                                        "img-src 'self' data: blob:; frame-src http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            observe.REQUEST_ID_HEADER: request_id,
         })
+        # The stream is logged once, by its own route, and never per iteration: it reads SQLite
+        # every second for the life of the connection, and a line per read is a log nobody can
+        # use growing forever on a small disk.
+        if "/stream" not in request.url.path:
+            observe.log_event(
+                "http.request", method=request.method, path=request.url.path,
+                status=response.status_code, ms=round((time.perf_counter() - began) * 1000, 1),
+                request_id=request_id)
         return response
 
     def role(request: Request, authorization: str = Header(default="")):
@@ -101,9 +133,22 @@ def create_app(settings=None):
     async def invalid(_, exc):
         return JSONResponse({"detail": "Invalid draft or content; inspect the supported content types and size limits"}, status_code=422)
 
+    APP_STARTED = time.time()
+
     @app.get("/healthz")
     def health():
+        """Liveness only: cheap, unauthenticated, and never touches the disk.
+
+        A probe that reads SQLite turns a slow disk into a restart loop, so the dependency check
+        lives in /healthz/detail where a human or a monitor asks for it deliberately.
+        """
         return {"status": "ok"}
+
+    @app.get("/healthz/detail")
+    def health_detail(_=Depends(role)):
+        """Readiness with reasons. Authenticated: it names configured components and lane ages,
+        which is operator information, not public information."""
+        return observe.snapshot(store, settings, started=APP_STARTED)
 
     @app.get("/api/status")
     def status(_=Depends(role)):
@@ -114,9 +159,16 @@ def create_app(settings=None):
                 "profile_features": {key: {"studio": value.studio, "tester": value.tester} for key, value in settings.profiles.items()},
                 "mode": "single-operator", "version": "0.1.0"}
 
+    # Columns the project list actually renders. `plan` is deliberately absent: it was 91% of
+    # this response (measured: 294 KB over 9 projects, 270 KB of it plan JSON) and the list view
+    # never reads it — the detail route is what returns the plan. `brief` is truncated because
+    # the card shows a 170-character preview. Adding a column here is a UI decision, so keep
+    # the projection explicit rather than SELECT *.
+    LIST_COLUMNS = "id,name,substr(brief,1,200) AS brief,profile,state,revision,created,client_id"
+
     @app.get("/api/projects")
     def projects(_=Depends(role)):
-        return store.all("SELECT * FROM projects ORDER BY created DESC LIMIT 200")
+        return store.all(f"SELECT {LIST_COLUMNS} FROM projects ORDER BY created DESC LIMIT 200")
 
     @app.post("/api/projects", status_code=201)
     def create_project(payload: ProjectInput, _=Depends(operator)):
@@ -219,6 +271,39 @@ def create_app(settings=None):
     def events(project: str, after: int = Query(default=0, ge=0), _=Depends(role)):
         store.project(project)
         return store.all("SELECT * FROM events WHERE project_id=? AND seq>? ORDER BY seq LIMIT 300", (project, after))
+
+    @app.get("/api/projects/{project}/stream")
+    async def stream(request: Request, project: str, after: int = Query(default=0, ge=0),
+                     _=Depends(role)):
+        """Server-sent events for one project, resumable from a cursor.
+
+        `async def` is mandatory, not stylistic: a synchronous endpoint runs in anyio's worker
+        thread pool, which is capped at 40 threads. One long-lived stream would occupy one of
+        those threads for its whole life, so a handful of open dashboard tabs would starve every
+        other request. This endpoint awaits instead of blocking.
+
+        The SQLite read is blocking, so it runs in a worker thread — `anyio.to_thread.run_sync`
+        — rather than directly. That keeps the read off the event loop without holding an async
+        task hostage for the duration of a disk read.
+        """
+        store.project(project)
+
+        async def fetch(cursor):
+            return await anyio.to_thread.run_sync(
+                lambda: store.all(EVENTS_SQL, (project, cursor, MAX_BATCH)))
+
+        return StreamingResponse(
+            event_frames(fetch, project, after),
+            media_type="text/event-stream",
+            headers={
+                # Proxies must not buffer an event stream. Caddy in particular buffers
+                # `reverse_proxy` responses by default; the deployment note records the
+                # `flush_interval -1` directive this header cannot substitute for.
+                "Cache-Control": "no-store",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     @app.get("/api/jobs/{job}/evidence")
     def evidence(job: str, _=Depends(role)):
@@ -458,6 +543,11 @@ def create_app(settings=None):
 
     static = Path(__file__).parent / "static"
     app.mount("/assets", StaticFiles(directory=static), name="assets")
+
+    @app.get("/favicon.ico")
+    def favicon():
+        """Without this every page load logs a 404 in the console, which hides real errors."""
+        return FileResponse(static / "favicon.svg", media_type="image/svg+xml")
 
     @app.get("/")
     def index():

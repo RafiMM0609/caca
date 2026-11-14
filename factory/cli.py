@@ -1,6 +1,5 @@
 import argparse
 import json
-import logging
 import os
 import secrets
 import shutil
@@ -12,6 +11,7 @@ import uvicorn
 from .config import Settings
 from .db import Store
 from .engine import Engine
+from . import observe
 
 
 def main():
@@ -33,7 +33,10 @@ def main():
     reconcile = commands.add_parser("reconcile")
     reconcile.add_argument("deployment")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # JSON lines, one object per record, so the log is queryable with jq and shipped without a
+    # parser. `FACTORY_LOG_LEVEL` is the only knob; there is no per-module configuration because
+    # a single-operator service does not need one.
+    observe.configure(os.environ.get("FACTORY_LOG_LEVEL", "INFO"))
     os.umask(0o077)
     if args.command == "init":
         directory = Path(args.data).resolve()
@@ -49,8 +52,11 @@ def main():
     settings = Settings.from_env()
     settings.validate()
     if args.command == "api":
+        # uvicorn's own access log is disabled on purpose: the application middleware emits one
+        # structured line per request already, and two loggers describing the same request is how
+        # a log becomes both double-sized and inconsistent about field names.
         uvicorn.run("factory.api:create_app", factory=True, host=args.host, port=args.port,
-                    proxy_headers=True, forwarded_allow_ips="127.0.0.1")
+                    proxy_headers=True, forwarded_allow_ips="127.0.0.1", access_log=False)
     elif args.command == "scheduler":
         Engine(settings).serve(args.lane)
     elif args.command == "run":
@@ -58,7 +64,7 @@ def main():
         # building it first. Extract into a throwaway directory, run the profile's build
         # commands there, then serve. The data directory is the only path that survives, so
         # repeated runs see the same records and a rebuild cannot mutate the artifact.
-        from .local_app import app_data_dir, expand_env, local_env
+        from .local_app import app_data_dir, build_env, expand_env
         from .workspace import extract
         store = Store(settings.data / "factory.sqlite3")
         project = store.project(args.project)
@@ -76,7 +82,7 @@ def main():
         work.mkdir(parents=True)
         extract(tarball.read_bytes(), work)
         data_dir = app_data_dir(settings, project["id"])
-        env = local_env()
+        env = build_env(work)
         env.update({"CI": "true", "npm_config_cache": os.environ.get(
             "FACTORY_NPM_CACHE", str(work / ".npm-cache"))})
         env.update(expand_env(profile.env, data_dir=data_dir, app_dir=work))

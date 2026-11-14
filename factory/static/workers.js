@@ -173,4 +173,80 @@ function workerGraph(project, events) {
   };
 }
 
-if (typeof module !== "undefined") module.exports = { workerGraph };
+/* Event cursor.
+ *
+ * The dashboard polls "what happened since seq N". The server half is an `after=` filter; this
+ * is the client half, and it is a pure function so it can be tested under `node --test` without
+ * a DOM. It exists because the old loader started from `after=0` on every poll and re-fetched a
+ * project's entire history every 4 seconds.
+ *
+ * Returns { events, cursor, after, more }. `more` means a full page arrived, so the caller
+ * should ask again immediately rather than wait for the next poll.
+ */
+function mergeEvents(log, page, cursor, pageSize = 300, limit = 2000) {
+  const events = log ? log.slice() : [];
+  let highest = Number(cursor) || 0;
+  for (const event of page || []) {
+    const seq = Number(event.seq);
+    // A duplicate seq is only possible if two polls race after a reconnect. Re-appending it
+    // would render the same worker event twice, so the cursor wins.
+    if (seq > highest) {
+      events.push(event);
+      highest = seq;
+    }
+  }
+  // The log is bounded. It exists so the wave view can render a whole build's history, but a
+  // dashboard tab left open for days would otherwise accumulate every event forever: measured
+  // at ~258 bytes of JSON per event, a 50k-event project is ~37 MB of live tab memory. Trimming
+  // to the newest `limit` keeps the view useful and the tab flat.
+  return {
+    events: events.length > limit ? events.slice(-limit) : events,
+    cursor: highest,
+    after: highest,
+    more: (page || []).length >= pageSize,
+  };
+}
+
+/* Server-sent event framing.
+ *
+ * `EventSource` is unusable here because it cannot send an `Authorization` header, so the
+ * dashboard reads the stream with `fetch()` and parses `text/event-stream` itself. That means
+ * this parser is load-bearing, so it is pure and unit tested rather than inlined in the
+ * transport.
+ *
+ * Returns { frames, rest }: complete frames plus the unconsumed tail, because a chunk boundary
+ * can land in the middle of a frame and the tail must be kept for the next chunk.
+ */
+function parseFrames(buffer) {
+  const frames = [];
+  let text = String(buffer || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (;;) {
+    const cut = text.indexOf("\n\n");
+    if (cut === -1) break;
+    const raw = text.slice(0, cut);
+    text = text.slice(cut + 2);
+    const frame = { event: "message", data: "", id: null, retry: null, comment: false };
+    const data = [];
+    let sawField = false;
+    for (const line of raw.split("\n")) {
+      if (!line) continue;
+      if (line.startsWith(":")) { frame.comment = true; continue; }
+      const colon = line.indexOf(":");
+      const field = colon === -1 ? line : line.slice(0, colon);
+      let value = colon === -1 ? "" : line.slice(colon + 1);
+      if (value.startsWith(" ")) value = value.slice(1);
+      sawField = true;
+      if (field === "event") frame.event = value;
+      else if (field === "data") data.push(value);
+      else if (field === "id") frame.id = value;
+      else if (field === "retry") frame.retry = Number(value);
+    }
+    frame.data = data.join("\n");
+    // A comment-only block (keepalive) carries no event and must not be dispatched.
+    if (sawField) frames.push(frame);
+    else frames.push({ ...frame, event: "comment" });
+  }
+  return { frames, rest: text };
+}
+
+if (typeof module !== "undefined") module.exports = { workerGraph, mergeEvents, parseFrames };

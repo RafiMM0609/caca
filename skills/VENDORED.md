@@ -61,6 +61,23 @@ Notes for anyone upgrading or debugging this one:
 - **All 1631 files are copied, not just the `SKILL.md`.** The skill is useless without `assets/`
   and `references/`, which it tells the model to read and copy from.
 
+### What the factory vendored *out of* this skill
+
+`design-taste-frontend` ships far more than a prompt: a reviewed motion layer, 13 dealt
+moments, 49 font families and a checker. Three parts of it are now used at runtime, and two are
+deliberately not:
+
+| Part | Where | Why |
+| --- | --- | --- |
+| `assets/moments/<id>/` + `moments.js`, `lib.js` | `factory/starters/nuxt-studio/public/assets/moments/` | The page's dealt moment. Copied as static files, never bundled (a bundled loader 404s every moment). |
+| `assets/motion/motion.css`, `motion.js` | `.../public/assets/motion/` | The hero entrance and the hover/press layer. |
+| `library/type.json` families | `.../public/assets/fonts/` | Self-hosted `latin` woff2, so a page does not need the network at render time. |
+| `library/palettes.json`, `type.json`, `assets/moments/index.json` | read in place by `factory/design.py` | Dealt on the controller. Not copied: a second copy would drift from the pin above. |
+| `scripts/consistency.mjs`, `gate.mjs`, `assets/` (the rest) | **not used** | The checker needs headless Chrome (106-445 s per run on this host) and reports 53 findings on an artifact that publishes today, so it is a design-review tool, not a build gate. `checks/ui_moments.py` covers the four defects that were measured to matter, in 0.77 s. |
+
+Run `python3 scripts/vendor_design_assets.py` after changing the commit below; it rewrites only
+the three directories it owns and leaves anything else beside them alone.
+
 ## How a worker receives one
 
 `Task.skills` names a directory here. `PiWorker` resolves it inside this directory and passes
