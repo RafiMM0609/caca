@@ -19,23 +19,35 @@ class Page(HTMLParser):
                 self.links.append(value)
 
 
+def require(condition, message):
+    """Fail loudly without relying on `assert`.
+
+    A bare `assert` is compiled out under `python -O` / `PYTHONOPTIMIZE=1`, and `PYTHONOPTIMIZE`
+    is accepted profile env — so this whole gate printed PASS while checking nothing. Measured:
+    on a page with no `<title>` and a missing asset, `python3 -O checks/static.py` exited 0.
+    An explicit raise cannot be optimised away.
+    """
+    if not condition:
+        raise SystemExit("FAIL: " + message)
+
+
 root = Path.cwd()
-assert (root / "index.html").is_file(), "index.html is required"
+require((root / "index.html").is_file(), "index.html is required")
 pages = list(root.rglob("*.html"))
 for file in pages:
     parser = Page()
     parser.feed(file.read_text())
-    assert "title" in parser.tags, f"Page needs a title: {file.name}"
+    require("title" in parser.tags, f"Page needs a title: {file.name}")
     for link in parser.links:
         url = urlsplit(link)
         if url.scheme or url.netloc or not url.path:
             continue
         path = (root / unquote(url.path).lstrip("/") if url.path.startswith("/") else file.parent / unquote(url.path)).resolve()
-        assert path.is_relative_to(root), "Link escapes website root"
-        assert path.exists(), f"Missing local asset: {link}"
+        require(path.is_relative_to(root), "Link escapes website root")
+        require(path.exists(), f"Missing local asset: {link}")
 out = Path(os.environ["FACTORY_OUTPUT"])
 for file in root.rglob("*"):
-    assert not file.is_symlink(), "Symlinks are forbidden"
+    require(not file.is_symlink(), "Symlinks are forbidden")
     if file.is_file():
         destination = out / file.relative_to(root)
         destination.parent.mkdir(parents=True, exist_ok=True)

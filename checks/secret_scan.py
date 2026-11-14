@@ -73,6 +73,28 @@ def main():
         for finding in findings:
             print(f"SECRET LEAK: {finding}")
         raise SystemExit(1)
+    # A scan that read nothing is not a pass. The message already printed "scanned 0", but nothing
+    # acted on it: measured, an empty directory and a directory holding only skipped suffixes both
+    # reported PASS. Since SKIP_DIRS contains release/.output/dist/build, a profile pointed at its
+    # own build output could scan nothing and still be reported clean. Every sibling check fails
+    # closed on an empty scan; this one now does too.
+    if scanned == 0:
+        # Distinguish "nothing here at all" from "only binary assets". A tree with just a `.png`
+        # is a legitimate state (the test suite pins it), and skipping a binary is the documented
+        # behaviour. A tree with nothing at all is not: it means the scan was pointed at the wrong
+        # directory -- typically a build output that SKIP_DIRS excludes -- and reporting PASS
+        # would be a false clean bill of health.
+        considered = [path for path in root.rglob("*")
+                      if path.is_file() and not path.is_symlink()
+                      and not any(part in SKIP_DIRS for part in path.relative_to(root).parts)]
+        if not considered:
+            raise SystemExit("FAIL: the directory holds no files at all, so nothing was verified "
+                             "(a scan that reads nothing must not report success)")
+        # Every file present is a binary asset whose contents this check deliberately does not
+        # read. That is a legitimate tree (a page with only images), so it passes -- but it says
+        # so, rather than claiming it scanned text it never opened.
+        print(f"PASS: {len(considered)} binary asset(s), no scannable text files; "
+              "binary contents are not inspected by design")
     print(f"PASS: scanned {scanned} text files; no credential-shaped or configured secret values found")
 
 
