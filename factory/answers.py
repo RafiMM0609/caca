@@ -17,7 +17,7 @@ to remember them:
 
 Pure functions over a `Plan`, with no database or HTTP, so the contract can be tested directly.
 """
-from .models import Plan
+from .models import GOAL_MAX_LENGTH, Plan
 
 OPERATOR_HEADING = "OPERATOR ANSWERS"
 
@@ -81,18 +81,38 @@ def apply_answers(plan: Plan, answers: dict[str, str]) -> Plan:
         tasks.append(task.model_copy(update={
             "instructions": f"{instructions}\n\n{OPERATOR_HEADING}:\n" + "\n".join(merged)}))
 
+    # Answers are appended to every flow's goal. Six detailed answers measured 1854 characters
+    # on their own, which exceeded the old 2000-character cap and made an answered plan fail
+    # validation — the operator saw only a 422 "invalid content". The cap is now
+    # `GOAL_MAX_LENGTH` (8000), which fits the answers map's own limit of 30 answers without
+    # truncating any of them.
+    #
+    # Truncation is kept as a guard rather than removed, because the plan can also be edited by
+    # hand and a goal that silently exceeds the model's cap is far harder to diagnose than one
+    # that says it was shortened. It trims only the appended addition, never the original
+    # sentence: the original is what the flow is *for*, while the addition repeats text the
+    # worker already has in `task.instructions` and `assumptions`.
     flows = []
     for flow in plan.test_flows:
-        # The answer goes into a step as well as the goal: the goal is prose for a reader, the
-        # steps are what the tester executes, and it was the steps that were missed the first
-        # time this went wrong.
-        addition = "; ".join(f"{question} -> {answer}".rstrip(". ") 
+        addition = "; ".join(f"{question} -> {answer}".rstrip(". ")
                              for question, answer in resolved)
         goal = flow.goal.rstrip()
         if not goal.endswith("."):
             goal += "."
+        head = f"{goal} Operator decisions this flow must respect: "
+        # Reserve one character for the terminating full stop.
+        budget = max(0, GOAL_MAX_LENGTH - len(head) - 1)
+        if len(addition) > budget:
+            # The marker counts against the budget too; appending it after slicing overshot the
+            # limit by its own length and produced a plan the model rejected.
+            marker = " [detail truncated]"
+            keep = max(0, budget - len(marker))
+            addition = addition[:keep].rstrip(" ;,") + marker
+            addition = addition[:budget]
         flows.append(flow.model_copy(update={
-            "goal": f"{goal} Operator decisions this flow must respect: {addition}.",
+            "goal": f"{head}{addition}.",
+            # The step carries the same text the goal has, so the tester executes what the goal
+            # states. It is not separately capped, and `steps` is limited by count, not length.
             "steps": [*flow.steps, f"Honour the operator decision: {addition}."],
         }))
 

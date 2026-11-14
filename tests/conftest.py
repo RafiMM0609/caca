@@ -27,6 +27,22 @@ def store(settings):
 
 
 @pytest.fixture
+def client(settings):
+    """An authenticated API client.
+
+    Defined here rather than in one test module because more than one module now exercises the
+    API surface, and a second copy of this fixture would drift from this one.
+    """
+    from fastapi.testclient import TestClient
+
+    from factory.api import create_app
+
+    with TestClient(create_app(settings)) as client:
+        client.headers["Authorization"] = "Bearer " + settings.operator_token
+        yield client
+
+
+@pytest.fixture
 def plan():
     return Plan(summary="Create a simple accessible portfolio website.", assumptions=[], questions=[],
                 tasks=[{"id": "website", "title": "Build website", "instructions": "Create accessible HTML and CSS.",

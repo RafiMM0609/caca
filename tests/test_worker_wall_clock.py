@@ -183,3 +183,35 @@ def test_the_real_host_browser_path_resolves_when_present(monkeypatch):
         assert found == str(Path(home) / ".cache" / "ms-playwright")
     else:
         assert found == ""
+
+
+def test_no_worker_call_site_falls_back_to_the_agent_clock():
+    """Every harness-worker invocation must pass `worker_timeout` explicitly.
+
+    `run_task` defaults to `agent_timeout` (600s) when `timeout` is omitted. That default is
+    correct for a one-shot structured call and wrong for a worker that edits a tree and builds
+    it: measured live, a worker was killed at 615s (agent_timeout + 15) after writing 1,784
+    lines of Zig that were then never committed, and the retry restarted from zero.
+
+    The fix landed piecemeal — implementation workers, then repair workers, then the merge
+    fixer — because each call site had to be found by hitting the bug. This test asserts the
+    property rather than the three fixes: for every `run_task` call in `factory/`, a `timeout`
+    keyword must be present. A new call site that forgets it fails here instead of in a live run
+    ten minutes in.
+    """
+    import ast
+    from pathlib import Path
+
+    calls = []
+    for path in sorted((Path(__file__).resolve().parent.parent / "factory").glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "run_task":
+                keywords = {keyword.arg for keyword in node.keywords}
+                calls.append((path.name, node.lineno, keywords))
+
+    assert calls, "no run_task call site found; the assertion below would be vacuous"
+    missing = [(name, line) for name, line, keywords in calls if "timeout" not in keywords]
+    assert not missing, (
+        "these run_task calls inherit agent_timeout (600s) instead of worker_timeout: "
+        + ", ".join(f"{name}:{line}" for name, line in missing))

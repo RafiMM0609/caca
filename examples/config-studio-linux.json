@@ -51,6 +51,83 @@
         "DATA_DIR": "{data}",
         "NODE_OPTIONS": "--max-old-space-size=1024"
       }
+    },
+    "express": {
+      "runner": "native",
+      "commands": [
+        [
+          "npm",
+          "ci",
+          "--omit=dev"
+        ]
+      ],
+      "artifact_dir": "node_modules",
+      "serve_argv": [
+        "node",
+        "server.js"
+      ],
+      "readiness_path": "/api/health",
+      "tester": true,
+      "timeout": 900,
+      "qa_timeout": 90,
+      "checks_dir": "checks",
+      "checks_argv": [
+        [
+          "python3",
+          "{checks}/secret_scan.py",
+          "."
+        ],
+        [
+          "python3",
+          "{checks}/js_syntax.py",
+          "."
+        ]
+      ],
+      "env": {
+        "DATABASE_URL": "file:{data}/app.db",
+        "DATA_DIR": "{data}",
+        "NODE_OPTIONS": "--max-old-space-size=512",
+        "NODE_ENV": "production"
+      }
+    },
+    "zig-htmx": {
+      "runner": "native",
+      "commands": [
+        [
+          "zig",
+          "build",
+          "-Doptimize=ReleaseSafe"
+        ]
+      ],
+      "artifact_dir": "zig-out/bin",
+      "serve_argv": [
+        "zig-out/bin/app"
+      ],
+      "readiness_path": "/api/health",
+      "tester": true,
+      "timeout": 600,
+      "qa_timeout": 60,
+      "checks_dir": "checks",
+      "checks_argv": [
+        [
+          "python3",
+          "{checks}/secret_scan.py",
+          "."
+        ],
+        [
+          "python3",
+          "{checks}/ui_lint.py",
+          "."
+        ],
+        [
+          "python3",
+          "{checks}/ui_moments.py",
+          "."
+        ]
+      ],
+      "env": {
+        "DATA_DIR": "{data}"
+      }
     }
   },
   "targets": {}

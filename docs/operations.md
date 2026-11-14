@@ -271,3 +271,152 @@ still needs manual work), and any authorization boundary between clients.
 ## Client separation (not implemented)
 
 Products are separated by git repository and directory, not by authentication. There is one operator; clients do not log in. There is no `client_id`, no per-client archiving, and no export or hand-off path for a product repository. Do not describe the current release as multi-tenant, and do not assume you can cleanly delete "everything belonging to client X" without manual work.
+
+## Live updates and the reverse proxy
+
+The dashboard keeps one long-lived connection open per viewed project: `GET
+/api/projects/<id>/stream` returns server-sent events. Everything else is ordinary
+request/response.
+
+This changes what a proxy in front of the API must do.
+
+- **Do not compress `/api`.** Caddy's `encode` buffers a response in order to compress it, and a
+  buffered `text/event-stream` is not a stream: live updates stop arriving and the dashboard
+  looks frozen until it reconnects. The supplied `deploy/Caddyfile.example` restricts `encode` to
+  `/assets/*` for this reason.
+- **The application never gzips the stream itself.** `GZipMiddleware` excludes
+  `text/event-stream` by content type (it is in Starlette's default exclusion list), and the
+  route also sends `X-Accel-Buffering: no`. Those two settings must stay consistent with the
+  proxy: if the edge stops compressing `/api` but the app starts compressing the stream (for
+  example by narrowing `exclude_content_types`), the same buffering returns.
+- **A stream is bounded.** It ends after `MAX_STREAM_SECONDS` (600s) with an
+  `event: reconnect` frame, and the client resumes from its cursor. A proxy that silently drops
+  idle connections is therefore harmless — the reconnect is the normal path, not an error.
+- **Keepalives matter.** An idle stream emits a `: keepalive` comment every 15s. If a proxy
+  idle-timeout is shorter than that, raise it rather than lowering the keepalive; a comment-only
+  response is cheap.
+- **Losing the stream is not an outage.** After three failed reconnect attempts the dashboard
+  falls back to cursor polling, which is correct but slower. If an operator reports "updates take
+  a few seconds", check the proxy before the browser.
+
+## Logs, health and migrations
+
+### Logs
+
+Every process writes one JSON object per line to stdout, so `journalctl -o cat` and `jq` both
+work without a parser. There is one knob: `FACTORY_LOG_LEVEL` (default `INFO`). uvicorn's own
+access log is disabled, because the application middleware already emits one `http.request`
+record per request and two loggers describing the same request produce both double-sized and
+inconsistent logs.
+
+```sh
+journalctl -u software-factory-api -o cat | jq 'select(.event=="http.request") | {path,status,ms}'
+journalctl -u software-factory-api -o cat | jq 'select(.status>=500)'
+```
+
+Two rules that are enforced in code rather than left to discipline:
+
+- **Credentials are redacted by field name**, recursively, at every log call. A token nested in
+  a job payload is redacted too. The test asserts that a token cannot appear in the output.
+- **The event stream is logged once, never per iteration.** It reads SQLite once a second for the
+  life of a connection; a line per read would emit ~3600 lines per hour per open tab for no
+  diagnostic value, on a host with 14 GB free.
+
+Volume to expect from the dashboard: roughly 900 lines per hour while a tab is open (one poll
+every 8 s, two requests each), about 0.2 MB/h at ~195 bytes per line. A build job adds its own
+worker and stage events.
+
+### Health
+
+| Endpoint | Auth | Cost | Purpose |
+| --- | --- | --- | --- |
+| `/healthz` | none | no I/O at all | Liveness. Never touches SQLite, so a slow disk cannot cause a restart loop. |
+| `/healthz/detail` | operator | one indexed query, `/proc` reads | Readiness with reasons: database latency, lane heartbeat ages, configured model and Pi, process RSS and thread count. |
+
+`/healthz/detail` reports `ok`, `degraded` or `fail`, with a severity ladder: once a check has
+reported `fail`, a later `degraded` check cannot soften it. A stopped **build** lane is
+`degraded` (the API still serves reads and a stopped deploy/serve lane is a configuration
+choice); an unreachable database is `fail`.
+
+### Migrations
+
+Schema changes are numbered entries in `MIGRATIONS_LIST` in `factory/db.py`, each applied once and
+recorded in `schema_version`. Each migration runs in the same transaction as its version bump, so
+a failed migration is not recorded and is retried on the next start instead of leaving the schema
+half-changed and forgotten. A migration whose column already exists is adopted and recorded,
+which is what makes it safe against a database created by an older release.
+
+Adding one:
+
+```python
+(5, "what it changes", "ALTER TABLE some_table ADD COLUMN some_column TEXT"),
+```
+
+Do not renumber existing entries, and do not reorder them: versions are explicit, not positional.
+
+### Optional browser test
+
+`tests/test_ui_browser.py` drives the real dashboard in Chromium. It is opt-in and skipped by
+default:
+
+```sh
+uv run playwright install chromium          # once
+FACTORY_UI_TEST=1 uv run pytest tests/test_ui_browser.py -q
+```
+
+It is not in the default suite because a Chromium process tree measured ~387 MB resident on a
+1.9 GiB host where a build job already uses about 1 GB. Running it *alongside* a build is how the
+OOM killer gets involved, and an OOM kill during a build is indistinguishable from a real failure
+in the job log. Keep it out of the build lane.
+
+## The Zig profile
+
+`zig-htmx` builds a generated application with `zig build` and serves the resulting binary. It
+uses no Node, no `package.json` and no `node_modules`: that is the reason it exists.
+
+**Requirement: `zig` on the scheduler's `PATH`.** The profile invokes `zig` by name, not by an
+absolute path, because a checked-in home directory breaks every other checkout. If the service
+cannot see Zig, `factory doctor` will not catch it — the failure appears as a build step exiting
+non-zero. Set `FACTORY_ZIG=/absolute/path/to/zig` to pin it explicitly, or add its directory to
+the unit's `Environment=PATH=...`. `FACTORY_ZIG` is also what the worker's measured toolchain
+report reads, so without either setting a worker is told no Zig version and may write code for
+the wrong one. Zig pre-1.0 changes std APIs between minor releases; this profile was verified
+against **0.15.2**.
+
+Two integration details were required, and both were found by running a real build:
+
+- **`HOME` must exist during verification.** `local_env()` forwards only a small allowlist, so
+  the scratch build environment had no `HOME` and `zig build` failed with
+  `unable to resolve zig cache directory: AppDataDirUnavailable`. Verification now creates a
+  scratch `HOME` inside the throwaway build directory, which also stops one build poisoning the
+  next build's cache.
+- **A relative binary needs `./`.** `subprocess` searches `PATH`, not the working directory, so
+  `serve_argv: ["app"]` never started. Invisible for `node`, which is on `PATH`; fatal for a
+  compiled binary. `LocalApp` now prefixes `./` when the file exists and is executable in `cwd`.
+
+**Zig build output is not published.** `zig-out/` and `.zig-cache/` are excluded from the
+artifact for the same reason as `node_modules/`: they are regenerated by `zig build`, and
+`zig-out/bin/app` is ~2.3 MB of binary that a hand-off must not carry.
+
+**What the profile does not do.** There is no Nuxt Studio equivalent — `studio` is a Nuxt-only
+feature. Persistence is file-based by default: the planner is told to write JSON or an
+append-only log under `DATA_DIR` rather than link SQLite, because a C dependency is a build risk
+a first Zig version should not carry. `checks_argv` deliberately omits `js_syntax.py` (it needs
+Node and would report a toolchain problem as an application failure) and keeps
+`ui_lint.py` / `ui_moments.py`, which are pure-Python gates over the markup and CSS that a Zig
++ HTMX page still has.
+
+### Measured on this host
+
+| | Zig + HTMX (`zig-htmx`) | Nuxt (`nuxt-studio`) |
+| --- | --- | --- |
+| Install step | none | `npm ci` (~1 GB peak) |
+| Cold build | **21.8 s** (peak 209 MB) | 30–90 s typical |
+| Warm build | **0.04 s** | seconds to tens of seconds |
+| Served runtime RSS | **3.7 MB** | ~50 MB (Node) |
+| Binary / build output | **2.3 MB** | ~300 MB `node_modules` |
+
+A reference application that compiles and serves HTMX fragments ships in
+`examples/zig-htmx/`. It documents the two non-obvious API facts a worker gets wrong: `std.http.Server`
+handles one connection with no listener (bind `std.net` yourself), and `net.Stream.reader()`
+exposes `interface` as a *method* while the writer exposes it as a *field*.

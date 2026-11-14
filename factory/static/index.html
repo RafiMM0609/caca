@@ -1,33 +1,211 @@
 <!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Anton · Software Factory</title><link rel="stylesheet" href="/assets/style.css"><script src="/assets/workers.js" defer></script><script src="/assets/app.js" defer></script></head>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Anton · Software Factory</title>
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/workers.js" defer></script>
+  <script src="/assets/app.js" defer></script>
+</head>
 <body>
-<aside><a class="brand" href="/">a<span>anton<span class="brand-sub">SOFTWARE FACTORY</span></span></a><div class="nav-label">WORKSPACE</div><button class="nav active" id="overview">◈ &nbsp; Projects</button><div class="sidebar-note"><span class="dot"></span> Linux / single server<br><small>SQLite · Oh My Pi · Memorix</small></div></aside>
+<aside>
+  <a class="brand" href="/">a<span>anton<span class="brand-sub">SOFTWARE FACTORY</span></span></a>
+  <div class="nav-label">RUANG KERJA</div>
+  <button class="nav active" id="overview">◈ &nbsp; Proyek</button>
+  <div class="sidebar-note">
+    <span class="dot"></span> Linux / server tunggal<br>
+    <small>SQLite · Pi 1.5.0 · Memorix</small>
+  </div>
+</aside>
+
 <main>
-<header><span class="crumb">Workspace <span>/</span> Projects</span><div class="header-right"><span id="connection">Not connected</span><button id="logout" class="quiet" hidden>Disconnect</button></div></header>
-<section id="login" class="login card"><div class="eyebrow">YOUR SOFTWARE WORKSPACE</div><h1>From brief to<br>verified release.</h1><p>Connect to your factory to plan work, review changes, and ship a tested artifact.</p><form id="connect-form"><label for="token">Operator token</label><input id="token" type="password" autocomplete="off" required placeholder="Paste your operator token"><button class="primary" type="submit">Connect to factory <span>→</span></button></form><small>Tokens stay in this tab's memory and are cleared on disconnect.</small></section>
-<section id="workspace" hidden>
-<div class="heading"><div><div class="eyebrow">BUILD WITH INTENTION</div><h1>Projects</h1><p>Every release starts with a plan you can review.</p></div><button id="new-project" class="primary">+ New project</button></div>
-<div class="metrics"><div class="card"><small>PROJECTS</small><strong id="project-count">0</strong></div><div class="card"><small>BUILD WORKER</small><strong id="build-status">—</strong></div><div class="card"><small>TESTER AGENT</small><strong id="release-status">—</strong></div><div class="card"><small>MEMORY</small><strong id="memory-status">—</strong></div></div>
-<div id="readiness" class="notice" hidden></div><div id="project-list" class="project-grid"></div>
-</section>
-<section id="detail" hidden><button id="back" class="quiet">← All projects</button><div class="heading"><div><div class="eyebrow" id="project-profile"></div><h1 id="project-name"></h1><p id="project-brief"></p></div><span id="project-state" class="badge"></span></div>
-<div class="pipeline"><span>01 Brief</span><span>02 Plan approval</span><span>03 Build & review</span><span>04 Verification</span><span>05 Review result</span></div>
-<section id="studio-panel" class="card panel" hidden>
-<div class="section-title"><div><div class="eyebrow">VISUAL WORKSPACE</div><h2>Edit your website</h2></div><span id="studio-state" class="badge">Not started</span></div>
-<p>Change content, component fields and theme options with Nuxt Studio. Edits stay in a separate draft until you review and test them.</p>
-<div class="studio-steps"><span>1 · Open draft</span><span>2 · Edit in Studio</span><span>3 · Review changes</span><span>4 · Apply & test</span></div>
-<div class="studio-actions"><button id="studio-starter" class="secondary">Create & test Studio starter</button><button id="studio-open" class="primary">Open editable draft</button><button id="studio-review" class="secondary">Review changes</button><button id="studio-apply" class="primary" disabled>Apply & test</button><button id="studio-stop" class="quiet">Stop preview</button><button id="studio-discard" class="quiet">Discard draft</button></div>
-<p id="studio-help" class="muted"></p><div id="studio-preview" hidden><div class="preview-toolbar"><span>LOCAL DRAFT · Use the Studio button in the preview to edit</span><a id="studio-tab" target="_blank" rel="noopener noreferrer">Open in new tab ↗</a></div><iframe id="studio-frame" title="Nuxt Studio editable application preview" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer"></iframe></div>
-<details id="studio-diff"><summary>Content changes</summary><pre id="studio-diff-text"></pre></details>
-<p class="muted">This editor imports Markdown, JSON and YAML under content/. App logic, Vue source and uploaded media are outside this editing workflow. Preview is available only when the factory runs locally.</p>
-</section>
-<section class="card panel"><div class="section-title"><h2>Planner &amp; workers</h2><span class="muted" id="worker-model">Waves · parallel where the DAG allows</span></div><p class="muted">Tasks run in dependency waves: everything whose dependencies are satisfied runs at once, each in its own branch and worktree. Expand a worker for its instructions and review evidence.</p><div id="worker-tree"></div></section><div class="detail-grid"><div><section class="card panel"><div class="section-title"><h2>Plan & acceptance</h2><button id="generate" class="quiet">Generate plan</button></div><p class="muted">Review assumptions and resolve questions before approving. Editing creates a new revision.</p><div id="plan-summary"></div><div id="plan-questions"></div><div id="tasks"></div><details><summary>Edit plan JSON</summary><label for="plan-editor">Versioned plan</label><textarea id="plan-editor" rows="12" spellcheck="false"></textarea><button id="save-plan" class="secondary">Save revision</button></details><button id="approve" class="primary">Approve plan & start build</button></section>
-<section class="card panel"><div class="section-title"><h2>Activity</h2><span class="muted">Updates every 4 seconds</span></div><div id="events"></div></section></div>
-<div><section class="card panel"><h2>Build artifact</h2><div id="artifact-info" class="muted">Available after review and verification pass.</div><div class="stack"><button id="download" class="secondary">Download artifact</button><button id="source" class="secondary">View generated source</button><button id="serve" class="primary">Jalankan aplikasi</button><button id="serve-stop" class="quiet" hidden>Hentikan</button><div id="serve-info" class="muted"></div><div id="deployment-controls" hidden><button id="staging" class="secondary">Deploy to staging</button><label for="release-token">Production release token</label><input id="release-token" type="password" autocomplete="off" placeholder="Separate release credential"><button id="production" class="primary">Approve production release</button></div></div><div id="deployments"></div></section>
-<section class="card panel"><h2>Jobs & evidence</h2><div id="jobs"></div></section></div></div></section>
-<div id="message" role="status" hidden></div>
+  <header>
+    <span class="crumb">Ruang kerja <span>/</span> Proyek</span>
+    <div class="header-right">
+      <span id="connection">Belum terhubung</span>
+      <button id="logout" class="quiet" hidden>Putuskan</button>
+    </div>
+  </header>
+
+  <section id="login" class="login card">
+    <div class="eyebrow">RUANG KERJA SOFTWARE ANDA</div>
+    <h1>Dari brief ke<br>rilis terverifikasi.</h1>
+    <p>Hubungkan ke factory Anda untuk merencanakan pekerjaan, meninjau perubahan, dan menerbitkan artifact yang sudah teruji.</p>
+    <form id="connect-form">
+      <label for="token">Token operator</label>
+      <input id="token" type="password" autocomplete="off" required placeholder="Tempel token operator Anda">
+      <button class="primary" type="submit">Hubungkan ke factory <span>→</span></button>
+    </form>
+    <small>Token disimpan di memori tab ini dan dihapus saat Anda memutuskan koneksi.</small>
+  </section>
+
+  <section id="workspace" hidden>
+    <div class="heading">
+      <div>
+        <div class="eyebrow">BANGUN DENGAN NIAT</div>
+        <h1>Proyek</h1>
+        <p>Setiap rilis dimulai dari rencana yang bisa Anda tinjau.</p>
+      </div>
+      <button id="new-project" class="primary">+ Proyek baru</button>
+    </div>
+    <div class="metrics">
+      <div class="card"><small>PROYEK</small><strong id="project-count">0</strong></div>
+      <div class="card"><small>WORKER BUILD</small><strong id="build-status">—</strong></div>
+      <div class="card"><small>AGEN TESTER</small><strong id="release-status">—</strong></div>
+      <div class="card"><small>MEMORI</small><strong id="memory-status">—</strong></div>
+    </div>
+    <div id="readiness" class="notice" hidden></div>
+    <div id="project-list" class="project-grid"></div>
+  </section>
+
+  <section id="detail" hidden>
+    <button id="back" class="quiet">← Semua proyek</button>
+    <div class="heading">
+      <div>
+        <div class="eyebrow" id="project-profile"></div>
+        <h1 id="project-name"></h1>
+        <p id="project-brief"></p>
+      </div>
+      <span id="project-state" class="badge"></span>
+    </div>
+    <div class="pipeline">
+      <span>01 Brief</span>
+      <span>02 Persetujuan rencana</span>
+      <span>03 Build &amp; tinjau</span>
+      <span>04 Verifikasi</span>
+      <span>05 Hasil tinjauan</span>
+    </div>
+
+    <section id="studio-panel" class="card panel" hidden>
+      <div class="section-title">
+        <div>
+          <div class="eyebrow">RUANG KERJA VISUAL</div>
+          <h2>Sunting situs Anda</h2>
+        </div>
+        <span id="studio-state" class="badge">Belum dimulai</span>
+      </div>
+      <p>Ubah konten, field komponen, dan opsi tema lewat Nuxt Studio. Perubahan tetap berada di draft terpisah sampai Anda meninjau dan mengujinya.</p>
+      <div class="studio-steps">
+        <span>1 · Buka draft</span>
+        <span>2 · Sunting di Studio</span>
+        <span>3 · Tinjau perubahan</span>
+        <span>4 · Terapkan &amp; uji</span>
+      </div>
+      <div class="studio-actions">
+        <button id="studio-starter" class="secondary">Buat &amp; uji starter Studio</button>
+        <button id="studio-open" class="primary">Buka draft yang bisa disunting</button>
+        <button id="studio-review" class="secondary">Tinjau perubahan</button>
+        <button id="studio-apply" class="primary" disabled>Terapkan &amp; uji</button>
+        <button id="studio-stop" class="quiet">Hentikan pratinjau</button>
+        <button id="studio-discard" class="quiet">Buang draft</button>
+      </div>
+      <p id="studio-help" class="muted"></p>
+      <div id="studio-preview" hidden>
+        <div class="preview-toolbar">
+          <span>DRAFT LOKAL · Pakai tombol Studio di dalam pratinjau untuk menyunting</span>
+          <a id="studio-tab" target="_blank" rel="noopener noreferrer">Buka di tab baru ↗</a>
+        </div>
+        <iframe id="studio-frame" title="Pratinjau aplikasi Nuxt Studio yang bisa disunting" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer"></iframe>
+      </div>
+      <details id="studio-diff"><summary>Perubahan konten</summary><pre id="studio-diff-text"></pre></details>
+      <p class="muted">Editor ini mengimpor Markdown, JSON, dan YAML di dalam content/. Logika aplikasi, sumber Vue, dan media yang diunggah berada di luar alur penyuntingan ini. Pratinjau hanya tersedia saat factory berjalan secara lokal.</p>
+    </section>
+
+    <section class="card panel">
+      <div class="section-title">
+        <h2>Planner &amp; worker</h2>
+        <span class="muted" id="worker-model">Gelombang · paralel sesuai DAG</span>
+      </div>
+      <p class="muted">Task dijalankan dalam gelombang dependensi: semua task yang dependensinya sudah terpenuhi berjalan bersamaan, masing-masing di branch dan worktree sendiri. Buka satu worker untuk melihat instruksi dan bukti tinjauannya.</p>
+      <div id="worker-tree"></div>
+    </section>
+
+    <div class="detail-grid">
+      <div>
+        <section class="card panel">
+          <div class="section-title">
+            <h2>Rencana &amp; acceptance</h2>
+            <button id="generate" class="quiet">Buat rencana</button>
+          </div>
+          <p class="muted">Tinjau asumsi dan jawab pertanyaan sebelum menyetujui. Menyunting akan membuat revisi baru.</p>
+          <div id="plan-summary"></div>
+          <div id="plan-questions"></div>
+          <div id="tasks"></div>
+          <details>
+            <summary>Sunting JSON rencana</summary>
+            <label for="plan-editor">Rencana berversi</label>
+            <textarea id="plan-editor" rows="12" spellcheck="false"></textarea>
+            <button id="save-plan" class="secondary">Simpan revisi</button>
+          </details>
+          <button id="approve" class="primary">Setujui rencana &amp; mulai build</button>
+        </section>
+
+        <section class="card panel">
+          <div class="section-title">
+            <h2>Aktivitas</h2>
+            <span class="muted" id="activity-note">Diperbarui otomatis</span>
+          </div>
+          <div id="events"></div>
+        </section>
+      </div>
+
+      <div>
+        <section class="card panel">
+          <h2>Artifact build</h2>
+          <div id="artifact-info" class="muted">Tersedia setelah tinjauan dan verifikasi lulus.</div>
+          <div class="stack">
+            <button id="download" class="secondary">Unduh artifact</button>
+            <button id="source" class="secondary">Lihat sumber yang dihasilkan</button>
+            <button id="serve" class="primary">Jalankan aplikasi</button>
+            <button id="serve-stop" class="quiet" hidden>Hentikan</button>
+            <div id="serve-info" class="muted"></div>
+            <div id="deployment-controls" hidden>
+              <button id="staging" class="secondary">Deploy ke staging</button>
+              <label for="release-token">Token rilis produksi</label>
+              <input id="release-token" type="password" autocomplete="off" placeholder="Kredensial rilis terpisah">
+              <button id="production" class="primary">Setujui rilis produksi</button>
+            </div>
+          </div>
+          <div id="deployments"></div>
+        </section>
+
+        <section class="card panel">
+          <h2>Job &amp; bukti</h2>
+          <div id="jobs"></div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <div id="message" role="status" aria-live="polite" hidden></div>
 </main>
-<dialog id="create-dialog"><form id="create-form"><div class="eyebrow">NEW PROJECT</div><h2>What are we building?</h2><label for="name">Project name</label><input id="name" minlength="3" maxlength="100" required placeholder="Customer portal"><label for="brief">Brief and acceptance criteria</label><textarea id="brief" rows="7" minlength="20" maxlength="20000" required placeholder="Who uses it, what they need to do, and how we'll know it works…"></textarea><label for="profile">Verification profile</label><select id="profile"></select><p class="muted">Profiles contain operator-owned checks and an isolated runtime.</p><div class="dialog-actions"><button id="close-create" type="button" class="quiet">Cancel</button><button class="primary" type="submit">Create project</button></div></form></dialog>
-<dialog id="evidence-dialog"><div class="section-title"><h2>Evidence</h2><button id="close-evidence" class="quiet">Close</button></div><pre id="evidence"></pre></dialog>
-</body></html>
+
+<dialog id="create-dialog">
+  <form id="create-form">
+    <div class="eyebrow">PROYEK BARU</div>
+    <h2>Kita mau membangun apa?</h2>
+    <label for="name">Nama proyek</label>
+    <input id="name" minlength="3" maxlength="100" required placeholder="Portal pelanggan">
+    <label for="brief">Brief dan kriteria penerimaan</label>
+    <textarea id="brief" rows="7" minlength="20" maxlength="20000" required placeholder="Siapa yang memakainya, apa yang harus bisa mereka lakukan, dan bagaimana kita tahu itu berhasil…"></textarea>
+    <label for="profile">Profil verifikasi</label>
+    <select id="profile"></select>
+    <p class="muted">Profil berisi check milik operator dan runtime yang terisolasi.</p>
+    <div class="dialog-actions">
+      <button id="close-create" type="button" class="quiet">Batal</button>
+      <button class="primary" type="submit">Buat proyek</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="evidence-dialog">
+  <div class="section-title">
+    <h2>Bukti</h2>
+    <button id="close-evidence" class="quiet">Tutup</button>
+  </div>
+  <pre id="evidence"></pre>
+</dialog>
+</body>
+</html>

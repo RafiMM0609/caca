@@ -33,6 +33,19 @@ logger = logging.getLogger(__name__)
 DESIGN_SKILLS = frozenset({"design-taste-frontend", "emil-design-eng", "animate",
                            "apple-design", "mobile-native", "break-ui"})
 
+def _is_zig_profile(profile) -> bool:
+    """True when the profile builds with `zig build`.
+
+    Decided from the configured commands, not the profile's name: the name is an operator label
+    and renaming `zig-htmx` to `landing-page` must not silently switch the instructions back to
+    the Node contract. If any command invokes zig, the profile is a Zig build.
+    """
+    for command in getattr(profile, "commands", ()) or ():
+        if command and any(str(part).endswith("zig") or part == "zig" for part in command[:2]):
+            return True
+    return False
+
+
 PLANNER_PROMPT = (
     "Design a concrete task plan with acceptance criteria. "
     "Tasks form a DAG: use depends_on to declare real dependencies. Tasks "
@@ -58,6 +71,14 @@ PLANNER_PROMPT = (
     "else needs building, plan the source tasks alone. "
     "List unresolved business questions in questions. Do not invent requirements. "
     "The static profile serves plain HTML/CSS/JS, with index.html at the root. "
+    "A zig profile is a Zig HTTP server (std.http.Server or a hand-rolled listener) that serves "
+    "HTML, CSS and static files itself and returns HTML fragments for HTMX requests; it needs no "
+    "Node, no package.json and no npm install, and it is built with `zig build`. Write Zig that "
+    "compiles against the exact version reported in the toolchain facts -- Zig pre-1.0 changes "
+    "std APIs between minor releases, so do not write from memory. For a zig profile keep "
+    "markup in .html files or inline in Zig, use htmx attributes (hx-get, hx-post, hx-target, "
+    "hx-swap) instead of a JavaScript framework, and serve one fragment per interaction rather "
+    "than a full page. "
     "Other profiles must follow the operator's verification contract. "
     "Persistence: unless the brief explicitly names an external database "
     "(for example Supabase, Postgres, MySQL or any hosted database with a "
@@ -65,7 +86,10 @@ PLANNER_PROMPT = (
     "SQLite file. The environment provides DATABASE_URL pointing at that file "
     "and DATA_DIR pointing at the directory that holds it; both survive "
     "restarts and must be read rather than hardcoded. Only choose an external "
-    "database when the brief asks for one by name. "
+    "database when the brief asks for one by name. For a zig profile, persistence is file-based "
+    "by default: write JSON or a simple append-only log under DATA_DIR, because SQLite from Zig "
+    "requires linking the C library and that is a build risk a first version should not carry. "
+    "State the choice in the plan summary so the operator can object. "
     "For tester-enabled profiles include test_flows with explicit API routes/status/JSON "
     "and browser routes/selectors/actions/expected outcomes. These are the independent tester contract. "
     "Every browser flow MUST list the selectors it depends on in its `selectors` map "
@@ -528,10 +552,14 @@ class Engine:
                    "dependency constraints; do not invent version ranges):\n" + toolchain
                    if toolchain else "")
                 + ("\n\nPERSISTENCE CONTRACT:\n"
-                   "- Store data in a local SQLite file unless the brief names an external database.\n"
-                   "- Read the database location from the DATABASE_URL environment variable (a\n"
-                   "  file: URL) and the directory from DATA_DIR. Never hardcode a path.\n"
-                   "- Do not commit the database file: it is created at runtime inside DATA_DIR.\n"
+                   + ("- This is a Zig application: store data in a file under DATA_DIR (JSON or an\n"
+                      "  append-only log). Do not attempt to link SQLite; a C dependency in a first\n"
+                      "  Zig build is a build failure waiting to happen.\n"
+                      if _is_zig_profile(profile) else
+                      "- Store data in a local SQLite file unless the brief names an external database.\n"
+                      "- Read the database location from the DATABASE_URL environment variable (a\n"
+                      "  file: URL) and the directory from DATA_DIR. Never hardcode a path.\n")
+                   + "- Do not commit the data file: it is created at runtime inside DATA_DIR.\n"
                    "  Add its filename to .gitignore.\n"
                    "- The data must survive a process restart: do not hold records only in memory."
                    if profile.env else "")

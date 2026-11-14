@@ -31,6 +31,82 @@ def lane_predicate(lane):
     return "kind IN (" + ",".join("'" + kind + "'" for kind in kinds) + ")"
 
 
+
+# --- schema migrations ----------------------------------------------------------------------
+#
+# Replaces the previous "try ALTER TABLE, ignore the failure" block. That approach worked but had
+# two problems worth naming, because both cost real time to diagnose:
+#
+#   1. It could not tell "already applied" apart from "failed for another reason". Catching the
+#      error and moving on is indistinguishable from a silent no-op, so a migration that did not
+#      apply looked identical to one that had.
+#   2. There was no record of what had run. `schema_version` existed but was never written, so a
+#      future migration had no way to know the current shape without re-deriving it from
+#      `PRAGMA table_info` every time.
+#
+# Each migration is (version, description, function). Version 1 is the baseline created by the
+# CREATE TABLE IF NOT EXISTS above, so the list below starts at 2. A migration runs once, inside
+# the same transaction as the version bump: if the ALTER fails the version is not recorded and
+# the next start retries it, rather than leaving the database half-migrated and forgotten.
+# Explicit versions, not list positions. Positional numbering looked tidy and was wrong: a
+# caller-supplied migration list (which the tests use) started at 2 and collided with an applied
+# version, so the migration silently did not run and the test that expected a failure passed.
+MIGRATIONS_LIST = [
+    (2, "pending_edit on projects", "ALTER TABLE projects ADD COLUMN pending_edit TEXT"),
+    (3, "client_id on projects", "ALTER TABLE projects ADD COLUMN client_id TEXT NOT NULL DEFAULT ''"),
+    # Resume is only valid within the plan revision that produced the work: after an edit the same
+    # task id means different code, so a merged row from an older revision must not be treated as
+    # done.
+    (4, "revision on workers", "ALTER TABLE workers ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+class Migrations:
+    """Applies each pending migration once and records it.
+
+    The guard is `PRAGMA table_info`, not the version number alone, because a database created
+    by an older release may already have a column without having recorded the version. Checking
+    the real shape first is what makes this safe to run against an existing install — which is
+    the only kind of install that matters here.
+    """
+
+    def __init__(self, migrations=None):
+        self.migrations = list(MIGRATIONS_LIST if migrations is None else migrations)
+
+    @staticmethod
+    def _has_column(db, table, column):
+        return any(row[1] == column for row in db.execute(f"PRAGMA table_info({table})"))
+
+    def _column_of(self, sql):
+        # "ALTER TABLE <table> ADD COLUMN <column> ..." -> (table, column). Parsed rather than
+        # passed separately so a migration is a single readable string with no second source of
+        # truth about which column it adds.
+        parts = sql.split()
+        return parts[2], parts[5]
+
+    def apply(self, db):
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            applied = {row[0] for row in db.execute("SELECT version FROM schema_version")}
+            for version, _description, sql in self.migrations:
+                table, column = self._column_of(sql)
+                if version in applied or self._has_column(db, table, column):
+                    # Record the version even when the column already existed, so the ledger and
+                    # the real schema agree from now on.
+                    db.execute("INSERT OR IGNORE INTO schema_version VALUES(?)", (version,))
+                    continue
+                db.execute(sql)
+                db.execute("INSERT OR IGNORE INTO schema_version VALUES(?)", (version,))
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        return self
+
+
+MIGRATIONS = Migrations()
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
@@ -71,6 +147,14 @@ class Store:
                   detail TEXT NOT NULL DEFAULT '{}', created REAL NOT NULL, started REAL, finished REAL,
                   revision INTEGER NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS workers_by_job ON workers(job_id, task_id);
+                -- The dashboard reads three shapes constantly: one project's events after a
+                -- cursor, one project's jobs newest-first, and one project's worker rows.
+                -- Without these, SQLite answered every poll with a full table scan plus a
+                -- temporary B-tree for the ORDER BY (verified with EXPLAIN QUERY PLAN), which
+                -- grows linearly with the number of projects ever created.
+                CREATE INDEX IF NOT EXISTS events_by_project ON events(project_id, seq);
+                CREATE INDEX IF NOT EXISTS jobs_by_project ON jobs(project_id, created);
+                CREATE INDEX IF NOT EXISTS workers_by_project ON workers(project_id, created);
                 -- One row per project, because only one build of a project is served at a time.
                 -- The port is allocated at start and released at stop; `pid` exists so a row
                 -- left behind by a crash can be recognised as stale rather than believed.
@@ -80,23 +164,7 @@ class Store:
                   state TEXT NOT NULL, pid INTEGER, restarts INTEGER NOT NULL DEFAULT 0,
                   detail TEXT NOT NULL DEFAULT '{}', started REAL NOT NULL, checked REAL);
             """)
-            db.execute("BEGIN IMMEDIATE")
-            try:
-                columns = {row[1] for row in db.execute("PRAGMA table_info(projects)")}
-                if "pending_edit" not in columns:
-                    db.execute("ALTER TABLE projects ADD COLUMN pending_edit TEXT")
-                if "client_id" not in columns:
-                    db.execute("ALTER TABLE projects ADD COLUMN client_id TEXT NOT NULL DEFAULT ''")
-                # Resume is only valid within the plan revision that produced the work: after
-                # an edit the same task id means different code, so a merged row from an older
-                # revision must not be treated as done.
-                worker_columns = {row[1] for row in db.execute("PRAGMA table_info(workers)")}
-                if "revision" not in worker_columns:
-                    db.execute("ALTER TABLE workers ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
-                db.commit()
-            except BaseException:
-                db.rollback()
-                raise
+            MIGRATIONS.apply(db)
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=10, isolation_level=None)

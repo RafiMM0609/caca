@@ -1,5 +1,6 @@
 """Bounded local app lifecycle for trusted native development/test processes."""
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -49,6 +50,39 @@ def expand_env(env: dict[str, str], *, data_dir: Path | None = None, app_dir: Pa
     return expanded
 
 
+def build_env(directory) -> dict:
+    """Environment for running a profile's build commands.
+
+    `local_env()` forwards only a small allowlist, which is deliberate: it must not leak factory
+    or provider tokens into a build. But Zig resolves its global cache from `HOME` (or
+    `XDG_CACHE_HOME`) and fails with `unable to resolve zig cache directory: AppDataDirUnavailable`
+    when neither is set. That made `zig build` impossible in both the verifier and `factory run`,
+    for the same reason, discovered twice. It lives here so the two callers cannot drift apart
+    again: any new place that builds a product should use this rather than `local_env()` directly.
+
+    The scratch home points inside `directory`, so a build cannot poison a shared cache and
+    cannot read the operator's dotfiles.
+    """
+    env = local_env()
+    home = Path(directory) / "home"
+    env.setdefault("HOME", str(home))
+    Path(env["HOME"]).mkdir(parents=True, exist_ok=True)
+    return env
+
+
+def zig_binary() -> str:
+    """Path to the Zig compiler, or a bare name so `subprocess` reports the absence cleanly.
+
+    `FACTORY_ZIG` is consulted first because the binary often lives outside the scheduler's PATH
+    (a per-user install), and a profile that needs Zig must not depend on how the service was
+    started. Falls back to PATH, then to the plain name.
+    """
+    configured = os.environ.get("FACTORY_ZIG", "")
+    if configured:
+        return configured
+    return shutil.which("zig") or "zig"
+
+
 def runtime_facts() -> str:
     """The real toolchain the verifier will build with, for worker instructions.
 
@@ -59,8 +93,13 @@ def runtime_facts() -> str:
     the machine that will actually run `npm ci` and `node`.
     """
     facts = []
+    # Zig is probed alongside Node because a worker building a Zig profile needs to know the
+    # exact compiler version: Zig pre-1.0 breaks std API between minor releases, so a worker
+    # guessing from training data writes code for the wrong version. An absent toolchain simply
+    # produces no line, which is the honest answer -- the worker then knows it cannot use it.
     for label, argv in (("Node.js", ["node", "--version"]),
                         ("npm", ["npm", "--version"]),
+                        ("Zig", [zig_binary(), "version"]),
                         ("Python", [sys.executable, "--version"])):
         try:
             out = subprocess.run(argv, capture_output=True, text=True, timeout=15,
@@ -81,8 +120,18 @@ class LocalApp:
         child_env = local_env() if env is None else dict(env)
         child_env.update({"PORT": str(self.port), "NITRO_PORT": str(self.port), "HOST": "127.0.0.1",
                           "NITRO_HOST": "127.0.0.1", "NUXT_TELEMETRY_DISABLED": "1"})
+        resolved = [arg.replace("{port}", str(self.port)) for arg in argv]
+        # A relative executable is not looked up in `cwd` by subprocess: `Popen(['app'])` searches
+        # PATH only. That is invisible for `node` (which is on PATH) and fatal for a compiled
+        # binary served from the build output, where the argv is exactly `app`. Prefixing `./`
+        # when the file exists in cwd is what makes a Zig binary runnable; when it does not
+        # exist the argv is left untouched so a genuine failure reports the real path.
+        if resolved and not os.path.isabs(resolved[0]) and "/" not in resolved[0]:
+            candidate = Path(cwd) / resolved[0]
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                resolved[0] = "./" + resolved[0]
         command = [sys.executable, str(Path(__file__).with_name("watchdog.py")), str(os.getpid()),
-                   *[arg.replace("{port}", str(self.port)) for arg in argv]]
+                   *resolved]
         self.process = subprocess.Popen(command, cwd=cwd,
                                         env=child_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, start_new_session=True)

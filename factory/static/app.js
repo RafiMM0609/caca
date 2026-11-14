@@ -1,6 +1,14 @@
 "use strict";
 const $ = id => document.getElementById(id);
 let token = "", current = null, status = null, projectData = null, polling = false, revision = null, editNotice = "";
+// Event cursor per project. Without this the dashboard re-fetched the project's entire event
+// history every 4 seconds (measured: 63 KB for one project, repeated forever), which dominated
+// the poll payload. `seq` is a global autoincrement, so a cursor is all that is needed to ask
+// for "what happened since I last looked".
+let eventCursor = 0;   // highest seq already rendered
+let eventLog = [];     // the events rendered so far, kept so the wave view stays complete
+let loadedProject = null;  // which project eventLog/eventCursor belong to
+let streamAbort = null, streamActive = false, streamFailures = 0, streamProject = null;
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (cls) node.className = cls; return node; };
 const parsed = value => value ? JSON.parse(value) : null;
 function notify(text, error = false) { $("message").textContent = text; $("message").className = error ? "error" : ""; $("message").hidden = false; setTimeout(() => $("message").hidden = true, 8000); }
@@ -10,16 +18,78 @@ async function api(path, options = {}, override) {
   return response.json();
 }
 async function action(fn) { try { await fn(); await refresh(); } catch (error) { notify(error.message, true); } }
-function badge(state) { return el("span", state.replaceAll("_", " "), "badge " + state); }
+// States are machine words (`awaiting_plan`, `none`, `changes_requested`). Showing them raw put
+// "None" and "Failed" in front of an operator with no indication of whose failure it was, so
+// every state the dashboard can render has an Indonesian label. An unmapped state falls back to
+// the spaced machine word rather than an empty badge: an ugly label beats a blank one.
+const STATE_LABELS = {
+  draft: "Draft", planning: "Merencanakan", awaiting_plan: "Menunggu persetujuan",
+  building: "Sedang build", ready: "Siap", failed: "Gagal", cancelled: "Dibatalkan",
+  interrupted: "Terputus", queued: "Dalam antrean", running: "Berjalan",
+  succeeded: "Berhasil", merged: "Sudah di-merge", rejected: "Ditolak",
+  awaiting_merge: "Menunggu merge", conflict: "Konflik", blocked: "Terblokir",
+  changes_requested: "Perlu perbaikan", approved: "Disetujui", pending: "Menunggu",
+  waiting: "Menunggu", implemented: "Terimplementasi", accepted: "Diterima",
+  repairing: "Diperbaiki", retried: "Diulang", partial: "Sebagian", incomplete: "Tidak tuntas",
+  passed: "Lulus", plan_available: "Rencana tersedia", not_started: "Belum mulai",
+  not_configured: "Belum dikonfigurasi", none: "Belum ada",
+  preparing: "Menyiapkan", editing: "Menyunting", stopped: "Dihentikan", imported: "Terimpor",
+  discarded: "Dibuang", unhealthy: "Bermasalah", restarting: "Menyalakan ulang",
+};
+function label(state) { return STATE_LABELS[state] || String(state).replaceAll("_", " "); }
+function badge(state) { return el("span", label(state), "badge " + state); }
 function setView(view) { for (const id of ["login", "workspace", "detail"]) $(id).hidden = id !== view; }
-function disconnect() { token = ""; current = null; projectData = null; revision = null; $("token").value = ""; $("release-token").value = ""; $("connection").textContent = "Not connected"; $("logout").hidden = true; setView("login"); }
+// The token is held for the life of the tab so a reload does not force a re-paste.
+//
+// `sessionStorage`, not `localStorage`, and deliberately: sessionStorage is cleared when the tab
+// closes, is not shared between tabs, and is not sent automatically by the browser, so this does
+// not become a cookie-like ambient credential. It is still readable by any script running on
+// this origin, which is why the CSP forbids inline and third-party scripts and why there is no
+// `innerHTML` anywhere in this file. Do not move it to localStorage: that would leave a bearer
+// token for this API on disk, surviving the browser session.
+const TOKEN_KEY = "anton.operator.token";
+function saveToken(value) { try { sessionStorage.setItem(TOKEN_KEY, value); } catch { /* private mode */ } }
+function clearToken() { try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ } }
+function loadToken() { try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; } }
+
+function disconnect() { token = ""; clearToken(); current = null; projectData = null; revision = null; eventCursor = 0; eventLog = []; loadedProject = null; stopStream(); $("token").value = ""; $("release-token").value = ""; $("connection").textContent = "Belum terhubung"; $("logout").hidden = true; setView("login"); }
 $("logout").onclick = disconnect;
-$("connect-form").onsubmit = event => { event.preventDefault(); token = $("token").value; action(async () => { status = await api("/status"); $("token").value = ""; $("connection").textContent = "Factory connected"; $("logout").hidden = false; setView("workspace"); }); };
+$("connect-form").onsubmit = event => { event.preventDefault(); token = $("token").value; action(async () => { status = await api("/status"); saveToken(token); $("token").value = ""; $("connection").textContent = "Factory terhubung"; $("logout").hidden = false; setView("workspace"); }); };
+// A stored token is re-validated on load rather than trusted: the server may have rotated it,
+// and a stale token should land on the login form instead of a broken workspace.
+(async () => {
+  const saved = loadToken();
+  if (!saved) return;
+  token = saved;
+  try {
+    status = await api("/status");
+    $("connection").textContent = "Factory terhubung";
+    $("logout").hidden = false;
+    setView("workspace");
+    await refresh();
+  } catch { token = ""; clearToken(); setView("login"); }
+})();
 $("new-project").onclick = () => { $("profile").replaceChildren(...status.profiles.map(name => { const option = el("option", name); option.value = name; return option; })); $("create-dialog").showModal(); };
 $("close-create").onclick = () => $("create-dialog").close();
-$("create-form").onsubmit = event => { event.preventDefault(); action(async () => { const project = await api("/projects", { method: "POST", body: JSON.stringify({ name: $("name").value, brief: $("brief").value, profile: $("profile").value }) }); $("create-dialog").close(); $("create-form").reset(); current = project.id; revision = null; setView("detail"); }); };
-function overview() { current = null; revision = null; setView(token ? "workspace" : "login"); if (token) action(async () => {}); }
+$("create-form").onsubmit = event => { event.preventDefault(); action(async () => { const project = await api("/projects", { method: "POST", body: JSON.stringify({ name: $("name").value, brief: $("brief").value, profile: $("profile").value }) }); $("create-dialog").close(); $("create-form").reset(); current = project.id; revision = null; stopStream(); streamFailures = 0; setView("detail"); }); };
+function overview() { current = null; revision = null; eventCursor = 0; eventLog = []; loadedProject = null; stopStream(); setView(token ? "workspace" : "login"); if (token) action(async () => {}); }
 $("back").onclick = overview; $("overview").onclick = overview;
+
+// Keyboard shortcuts. Deliberately few and non-destructive: a dashboard that hijacks typing is
+// worse than one without shortcuts, so every binding is skipped while a field has focus.
+document.addEventListener("keydown", event => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName) || event.target.isContentEditable;
+  if (event.key === "Escape") {
+    for (const id of ["create-dialog", "evidence-dialog"]) {
+      const dialog = $(id);
+      if (dialog?.open) { dialog.close(); event.preventDefault(); return; }
+    }
+    if (!typing && current && !event.metaKey && !event.ctrlKey) { overview(); event.preventDefault(); }
+    return;
+  }
+  if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key === "n" && token && !current) { $("new-project").click(); event.preventDefault(); }
+});
 // Planner questions are answered in a form rather than by editing plan JSON: the operator is
 // not technical, and an answer has to reach the assumption record, every task instruction and
 // every test flow. Hand-editing made that the operator's job to remember, and forgetting the
@@ -80,29 +150,34 @@ async function refresh() {
     const [health, projects] = await Promise.all([api("/status"), api("/projects")]);
     status = health;
     $("project-count").textContent = projects.length;
-    $("build-status").textContent = health.workers.build_heartbeat ? "Online" : "Offline";
-    $("release-status").textContent = Object.values(health.profile_features || {}).some(p => p.tester) ? "On demand" : "Not configured";
-    $("memory-status").textContent = health.memorix_enabled ? "Memorix" : "Disabled";
+    $("build-status").textContent = health.workers.build_heartbeat ? "Aktif" : "Mati";
+    $("release-status").textContent = Object.values(health.profile_features || {}).some(p => p.tester) ? "Sesuai permintaan" : "Belum dikonfigurasi";
+    $("memory-status").textContent = health.memorix_enabled ? "Memorix" : "Nonaktif";
     const missing = [];
     if (!health.model_configured) missing.push("model configuration");
     if (!health.pi_installed) missing.push("Pi installation");
     if (!health.workers.build_heartbeat) missing.push("build worker");
     if (!health.profiles.length) missing.push("verification profile");
     $("readiness").hidden = !missing.length;
-    $("readiness").textContent = "Setup needed: " + missing.join(", ") + ". See the Linux setup guide.";
+    $("readiness").textContent = "Perlu disiapkan: " + missing.join(", ") + ". Lihat panduan setup Linux.";
     const list = $("project-list"); list.replaceChildren();
     for (const project of projects) {
       const card = el("button", undefined, "card project-card"), meta = el("div", undefined, "project-meta");
       meta.append(el("span", project.profile.toUpperCase()), badge(project.state));
       card.append(meta, el("h2", project.name), el("p", project.brief.slice(0, 170)), el("div", "Revision " + project.revision + " · Open project →", "project-meta"));
-      card.onclick = () => { current = project.id; revision = null; setView("detail"); action(async () => {}); };
+      card.onclick = () => { current = project.id; revision = null; eventCursor = 0; eventLog = []; loadedProject = null; stopStream(); streamFailures = 0; setView("detail"); action(async () => {}); };
       list.append(card);
     }
     if (!projects.length) list.append(el("div", "Your first project starts here. Add a brief to begin.", "empty"));
     if (current) {
       const projectId = current;
       const [project, events] = await Promise.all([api("/projects/" + projectId), loadEvents(projectId)]);
-      if (current === projectId) { renderProject(project, events); await refreshStudio(project); }
+      if (current === projectId) {
+        renderProject(project, events); await refreshStudio(project);
+        // Started after the history is rendered so the stream resumes from the cursor the
+        // history already reached, instead of re-sending events that are on screen.
+        if (!streamActive && streamProject !== projectId) { streamFailures = 0; startStream(projectId); }
+      }
     }
   } finally { polling = false; }
 }
@@ -283,7 +358,7 @@ function renderProject(project, events) {
   if (revision !== project.revision) { $("plan-editor").value = JSON.stringify(plan || { summary: "Describe the approved scope here", assumptions: [], questions: [], tasks: [] }, null, 2); revision = project.revision; }
   $("save-plan").disabled = active;
   $("artifact-info").replaceChildren();
-  if (artifact) { $("artifact-info").append(el("span", `${artifact.files} files · ${Math.round(artifact.bytes / 1024)} KB · revision ${artifact.revision}`), el("code", artifact.digest)); } else $("artifact-info").textContent = "Available after review and verification pass.";
+  if (artifact) { $("artifact-info").append(el("span", `${artifact.files} files · ${Math.round(artifact.bytes / 1024)} KB · revision ${artifact.revision}`), el("code", artifact.digest)); } else $("artifact-info").textContent = "Tersedia setelah tinjauan dan verifikasi lulus.";
   for (const id of ["download", "source"]) $(id).disabled = !artifact;
   renderServed(project, artifact, active);
   $("staging").disabled = !artifact || active || project.state !== "ready" || !status.targets.includes(project.id + ":staging");
@@ -308,22 +383,103 @@ $("serve-stop").onclick = () => action(async () => {
   notify("Permintaan berhenti dikirim.");
 });
 $("staging").onclick = () => release("staging"); $("production").onclick = () => release("production");
-function release(environment) { action(async () => { const releaseToken = $("release-token").value; if (environment === "production" && !releaseToken) throw new Error("Enter the separate production release token."); await api("/projects/" + current + "/deploy", { method: "POST", body: JSON.stringify({ environment, digest: parsed(projectData.artifact).digest }) }, environment === "production" ? releaseToken : undefined); $("release-token").value = ""; notify(environment + " release queued for the verified artifact."); }); }
+function release(environment) { action(async () => { const releaseToken = $("release-token").value; if (environment === "production" && !releaseToken) throw new Error("Masukkan token rilis produksi yang terpisah."); await api("/projects/" + current + "/deploy", { method: "POST", body: JSON.stringify({ environment, digest: parsed(projectData.artifact).digest }) }, environment === "production" ? releaseToken : undefined); $("release-token").value = ""; notify("Rilis " + environment + " diantrekan untuk artifact yang sudah terverifikasi."); }); }
 async function showEvidence(load) { await action(async () => { $("evidence").textContent = JSON.stringify(await load(), null, 2); $("evidence-dialog").showModal(); }); }
 $("source").onclick = () => showEvidence(() => api("/projects/" + current + "/source"));
 $("close-evidence").onclick = () => $("evidence-dialog").close();
-$("download").onclick = () => action(async () => { const response = await fetch("/api/projects/" + current + "/artifact", { headers: { Authorization: "Bearer " + token } }); if (!response.ok) throw new Error("Artifact download failed"); const url = URL.createObjectURL(await response.blob()), link = el("a"); link.href = url; link.download = "artifact-" + parsed(projectData.artifact).digest.slice(0, 12) + ".tar.gz"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
-setInterval(() => { if (token && !document.hidden) refresh().catch(error => notify(error.message, true)); }, 4000);
+$("download").onclick = () => action(async () => { const response = await fetch("/api/projects/" + current + "/artifact", { headers: { Authorization: "Bearer " + token } }); if (!response.ok) throw new Error("Unduhan artifact gagal"); const url = URL.createObjectURL(await response.blob()), link = el("a"); link.href = url; link.download = "artifact-" + parsed(projectData.artifact).digest.slice(0, 12) + ".tar.gz"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
+// The stream carries events; this timer carries everything else (job state, artifact, studio).
+// It backs off while a stream is live because the events are no longer the reason to poll, and
+// stops entirely while the tab is hidden: a background tab was doing 15 full refreshes a minute.
+let pollDelay = 4000, pollTimer = null;
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    if (token && !document.hidden) {
+      try { await refresh(); pollDelay = 4000; }
+      catch (error) { notify(error.message, true); pollDelay = Math.min(pollDelay * 2, 30000); }
+    }
+    schedulePoll();
+  }, streamActive ? 8000 : pollDelay);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { pollDelay = 4000; refresh().catch(error => notify(error.message, true)); } });
+schedulePoll();
 
-async function loadEvents(project) {
-  const events = [];
-  let after = 0;
-  while (true) {
-    const page = await api("/projects/" + project + "/events?after=" + after);
-    events.push(...page);
-    if (page.length < 300) return events;
-    after = page[page.length - 1].seq;
+/* Live events over server-sent events.
+ *
+ * `EventSource` cannot send an Authorization header, and this API is bearer-only with no cookie
+ * auth by design, so the stream is read with fetch()/ReadableStream where the header survives.
+ * It is resumable: every reconnect asks for `after=<eventCursor>`, so an interruption costs one
+ * frame rather than the whole history. After three failed attempts it falls back to the cursor
+ * polling that `loadEvents` already does, which is correct, just slower — so a broken stream
+ * degrades the experience instead of breaking the dashboard.
+ */
+
+function stopStream() {
+  if (streamAbort) { streamAbort.abort(); streamAbort = null; }
+  streamActive = false; streamProject = null;
+}
+
+async function startStream(project) {
+  if (streamProject === project) return;
+  stopStream();
+  streamProject = project;
+  while (token && current === project && streamFailures < 3) {
+    const controller = new AbortController();
+    streamAbort = controller;
+    try {
+      const response = await fetch("/api/projects/" + project + "/stream?after=" + eventCursor, {
+        headers: { Authorization: "Bearer " + token }, signal: controller.signal,
+      });
+      if (!response.ok || !response.body) throw new Error("stream tidak tersedia");
+      streamActive = true;
+      streamFailures = 0;
+      const reader = response.body.getReader(), decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const { frames, rest } = parseFrames(buffer);
+        buffer = rest;
+        let changed = false;
+        for (const frame of frames) {
+          if (frame.event === "comment" || frame.event === "reconnect") continue;
+          let payload; try { payload = JSON.parse(frame.data); } catch { continue; }
+          if (!payload || typeof payload.seq !== "number") continue;
+          const merged = mergeEvents(eventLog, [payload], eventCursor);
+          if (merged.cursor !== eventCursor) { eventLog = merged.events; eventCursor = merged.cursor; changed = true; }
+        }
+        if (changed) refresh().catch(() => {});
+      }
+      streamActive = false;
+    } catch (error) {
+      streamActive = false;
+      if (controller.signal.aborted) return;
+      streamFailures += 1;
+      await new Promise(resolve => setTimeout(resolve, 500 * streamFailures));
+    }
   }
+  // Falling back is silent by design: polling is still correct, just less immediate.
+  streamActive = false;
+}
+
+// Fetch only what arrived since the last render.
+//
+// This used to start from `after=0` on every poll, so a project with 226 events re-downloaded
+// all 63 KB of them every 4 seconds. The cursor is the highest `seq` already rendered, which is
+// why `eventLog` is kept: the wave view needs the whole history, but the network only needs the
+// delta. A project switch resets both, because another project's seq are meaningless here.
+async function loadEvents(project) {
+  if (project !== loadedProject) { loadedProject = project; eventCursor = 0; eventLog = []; }
+  while (true) {
+    const page = await api("/projects/" + project + "/events?after=" + eventCursor);
+    const merged = mergeEvents(eventLog, page, eventCursor);
+    eventLog = merged.events;
+    eventCursor = merged.cursor;
+    if (!merged.more) break;
+  }
+  return eventLog;
 }
 /* Wave view: what the planner assigned, what ran together, and what each worker did.
  * The point of this panel is the operator's original mental model — a planner handing
@@ -449,7 +605,7 @@ async function refreshStudio(project) {
   $("studio-panel").hidden = !state.enabled;
   if (!state.enabled) return;
   if (studioProject !== project.id) { reviewedDraft = null; $("studio-diff-text").textContent = ""; studioProject = project.id; }
-  $("studio-state").textContent = state.state;
+  $("studio-state").textContent = label(state.state);
   const active = project.jobs.some(j => ['queued', 'running'].includes(j.state));
   $("studio-starter").hidden = project.state !== 'draft';
   $("studio-open").disabled = active || project.state !== 'ready' || ['editing', 'preparing'].includes(state.state);
@@ -458,7 +614,13 @@ async function refreshStudio(project) {
   $("studio-apply").disabled = active || reviewedDraft !== state.id || !['stopped', 'failed'].includes(state.state);
   $("studio-stop").disabled = !['editing', 'preparing'].includes(state.state);
   $("studio-discard").disabled = ['none', 'imported', 'discarded'].includes(state.state);
-  $("studio-help").textContent = state.state === 'preparing' ? 'Preparing the local editor and dependencies. This can take a few minutes.' : state.state === 'failed' ? 'Preview setup failed. Your draft is retained; check the local Node runtime and dependencies, then reopen.' : state.state === 'editing' ? 'Use the floating Studio button inside the preview. Save edits there, then choose Review changes here.' : state.state === 'imported' ? 'Edits are saved as a new revision. Verification must pass before this becomes the latest successful build.' : 'Open a verified Nuxt Studio project, or initialize the supplied starter for a new project.';
+  // One sentence per state, so the operator is told what to do next rather than what went wrong.
+  $("studio-help").textContent = {
+    preparing: 'Menyiapkan editor lokal dan dependensinya. Ini bisa memakan beberapa menit.',
+    failed: 'Persiapan pratinjau gagal. Draft Anda tetap disimpan; periksa runtime Node lokal dan dependensinya, lalu buka kembali.',
+    editing: 'Pakai tombol Studio di dalam pratinjau. Simpan suntingan di sana, lalu pilih Tinjau perubahan di sini.',
+    imported: 'Suntingan tersimpan sebagai revisi baru. Verifikasi harus lulus sebelum ini menjadi build terverifikasi terbaru.',
+  }[state.state] || 'Buka proyek Nuxt Studio yang sudah terverifikasi, atau siapkan starter bawaan untuk proyek baru.';
   $("studio-preview").hidden = !state.url;
   if (state.url) {
     if ($("studio-frame").getAttribute('src') !== state.url) $("studio-frame").src = state.url;
@@ -469,7 +631,7 @@ async function studioAction(name) { return api('/projects/' + current + '/studio
 $("studio-open").onclick = () => action(async () => { reviewedDraft = null; await studioAction('start'); });
 $("studio-starter").onclick = () => action(() => studioAction('starter'));
 $("studio-stop").onclick = () => action(() => studioAction('stop'));
-$("studio-discard").onclick = () => action(async () => { if (!confirm('Discard this draft? Verified builds will be kept.')) return; reviewedDraft = null; await studioAction('discard'); });
+$("studio-discard").onclick = () => action(async () => { if (!confirm("Buang draft ini? Build yang sudah terverifikasi tetap disimpan.")) return; reviewedDraft = null; await studioAction('discard'); });
 $("studio-review").onclick = () => action(async () => {
   const state = await studioAction('stop');
   const diff = await api('/projects/' + current + '/studio/diff');

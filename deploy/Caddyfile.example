@@ -1,4 +1,20 @@
 factory.example.com {
     reverse_proxy 127.0.0.1:8080
+
+    # Compression is deliberately limited to the static assets, not /api.
+    #
+    # Two separate reasons, both measured or observed rather than assumed:
+    #   1. `encode` buffers a response in order to compress it. An SSE stream on
+    #      text/event-stream that passes through it stops being a stream, so the dashboard's
+    #      live updates silently degrade to "nothing happens until reconnect".
+    #   2. The API already compresses its own JSON (GZipMiddleware, minimum 1 KB), and the
+    #      event stream is excluded from that by content type. Doing it twice at the edge
+    #      re-introduces exactly the buffering that was avoided.
+    #
+    # `text/event-stream` is also in Starlette's default gzip exclusion list, so the app never
+    # compresses it either. These two settings must agree; if one is changed, change the other.
+    @static path /assets/*
+    encode @static zstd gzip
+
     header Strict-Transport-Security "max-age=31536000"
 }

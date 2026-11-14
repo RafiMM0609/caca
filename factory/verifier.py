@@ -99,8 +99,8 @@ class NativeVerifier:
         with tempfile.TemporaryDirectory(prefix="sf-native-", dir=source.parent) as directory:
             work = Path(directory) / "app"
             clone_tree(source, work)
-            from .local_app import expand_env, local_env
-            env = local_env()
+            from .local_app import build_env, expand_env
+            env = build_env(directory)
             env.update({"CI": "true", "npm_config_cache": os.environ.get("FACTORY_NPM_CACHE", str(Path(directory) / "npm-cache"))})
             # Verification gets its own throwaway data directory, never the product's live one.
             # Tests that create and then list records must behave identically on every run, so
