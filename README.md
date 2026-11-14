@@ -26,7 +26,7 @@ Each product owns an independent repository at `data/products/<project-id>`. The
 
 This is what makes per-worker worktrees, reviewable diffs, rollback and future client hand-off possible.
 
-## Native Linux (without Docker)
+## Native Linux
 
 Native execution is the validated default for local work. It requires an explicit `FACTORY_ALLOW_NATIVE=1` opt-in. See [Linux validation and setup](docs/validation-linux.md).
 
@@ -163,7 +163,7 @@ The dashboard integrates local Nuxt Studio drafts and an independent tester that
 
 ## Boundaries
 
-- **Native workers are not sandboxed.** Each worker gets a temporary `HOME`, `PI_CODING_AGENT_DIR` and XDG directories, so `~/.ssh`, `~/.aws` and the operator's git identity are unreachable, and factory tokens are removed from its environment. Provider credentials still reach the worker because the model call requires them: a worker that can run `env` can observe the provider key. Docker's CPU/RAM isolation does not apply.
+- **Native workers are not sandboxed.** Each worker gets a temporary `HOME`, `PI_CODING_AGENT_DIR` and XDG directories, so `~/.ssh`, `~/.aws` and the operator's git identity are unreachable, and factory tokens are removed from its environment. Provider credentials still reach the worker because the model call requires them: a worker that can run `env` can observe the provider key.
 - One build scheduler and one deployment scheduler use distinct process locks. Jobs are durable and atomically claimed. Interrupted work is marked for inspection, never blindly replayed.
 - Memory is optional. `FACTORY_MEMORIX=/path/to/memorix` enables project-scoped MCP search/store. Memorix failure emits an event and does not replace SQLite task truth. Live interoperability is not yet verified.
 - `FACTORY_WORKER_CONCURRENCY` (default 3, max 16) bounds simultaneous workers. Each runs as its own process tree and applies `FACTORY_WORKER_TIMEOUT`, or `FACTORY_SKILL_WORKER_TIMEOUT` when its task declares a design skill.
@@ -186,6 +186,6 @@ node --check factory/static/workers.js
 node --test tests/workers.test.cjs
 ```
 
-Optional: `FACTORY_TEST_DOCKER=1 uv run pytest tests/test_container.py -q` for the Docker profile, and `FACTORY_LIVE_WORKER=1 uv run pytest tests/test_worker.py -q` for a real model worker call. Browser tests need `uv run playwright install chromium` or `FACTORY_CHROMIUM=/path/to/chromium`. Add `FACTORY_UI_TEST=1` to run the dashboard browser smoke test (~390 MB for Chromium; keep it out of the build lane — see [operations](docs/operations.md#optional-browser-test)).
+Optional: `FACTORY_LIVE_WORKER=1 uv run pytest tests/test_worker.py -q` for a real model worker call. Browser tests need `uv run playwright install chromium` or `FACTORY_CHROMIUM=/path/to/chromium`. Add `FACTORY_UI_TEST=1` to run the dashboard browser smoke test (~390 MB for Chromium; keep it out of the build lane — see [operations](docs/operations.md#optional-browser-test)).
 
 Model responses in the default suite are scripted test doubles. Passing those tests is not evidence of live AI generation. The live runs recorded in the handoff are dated and separate. Dependencies are locked in `uv.lock`.

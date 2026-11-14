@@ -67,7 +67,7 @@ and again at extraction, so an artifact can never point at `/etc/passwd` or an o
 
 Two data directories exist and they are not interchangeable. **Verification** gets a throwaway directory inside its disposable build tree, so a case that creates a record and then lists records sees the same result every run instead of inheriting rows from the previous build. **`factory run <project>`** serves the published artifact against `data/product-data/<id>`, which sits **outside** the product's git working tree: a SQLite file inside the repository could be committed by `git add -A`, would be clobbered by the next checkout, and would ship in the artifact. A generated application may also legitimately own a `data/` directory of its own, so an inside-the-repo path would collide with real source. `app_data_dir()` in `factory/local_app.py` is the single definition; do not recompute the path elsewhere. `serve_argv` resolves against the artifact root, which already corresponds to `artifact_dir`, so a leading `release/` on the entry point is stripped rather than doubled.
 
-The default stack for a new product is a local SQLite file, and the planner and worker briefs say so explicitly. An external database is chosen only when the brief names one (Supabase, Postgres, MySQL, or any hosted database with a hostname and password). The Docker verification profile has no persistent mount, so treat persistence as a native-runner capability.
+The default stack for a new product is a local SQLite file, and the planner and worker briefs say so explicitly. An external database is chosen only when the brief names one (Supabase, Postgres, MySQL, or any hosted database with a hostname and password).
 
 The shipped checks are `checks/secret_scan.py`, `checks/js_syntax.py` and `checks/js_typecheck.py`.
 
@@ -104,11 +104,9 @@ The shipped checks are `checks/secret_scan.py`, `checks/js_syntax.py` and `check
 for each profile, so what will run is visible before a build instead of being discovered in the
 evidence afterwards.
 
-**Docker (optional, legacy).** Images must be digest pinned, pre-pulled, and contain Python 3 plus any application toolchain. Verification has no network access, so dependencies must be preinstalled in an audited image; do not enable network to make arbitrary generated install scripts work. Checks execute in `/work/app`, see source at `/source` read-only and checks at `/checks` read-only, and must export deployable files to `/output`. For Docker profiles `/output` is the export contract and `artifact_dir` is not used.
-
 For JSON responses the tester offers `json_contains` (subset: named fields must match, extra response fields are ignored) and `json_equals` (the response must be identical). Prefer `json_contains`: a partial `json_equals` fails a correct application that returns more fields than the case named, and the repair loop will then spend a worker editing correct code. A case that is provably unsatisfiable is reported as a `contract.defect` and fails the job without a repair attempt — fix the case with `json_contains` and re-approve.
 
-`npm ci` requires network access, which is why the Nuxt Studio profile is native rather than Docker. Add application-specific acceptance tests, not just build checks. The included static check is structural; it is not browser, accessibility, security or business acceptance certification.
+`npm ci` requires network access, so verification runs natively rather than in an offline container. Add application-specific acceptance tests, not just build checks. The included static check is structural; it is not browser, accessibility, security or business acceptance certification.
 
 ## Timeouts and run budgets
 

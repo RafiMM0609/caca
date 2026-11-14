@@ -24,8 +24,7 @@ IMAGE = "python@sha256:" + "b" * 64
 def settings(tmp_path):
     config = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
                       pi="/usr/bin/true", model="test/model",
-                      profiles={"static": {"image": IMAGE, "verify_argv": ["true"],
-                                           "checks_dir": str(tmp_path)}})
+                      profiles={"static": {"runner": "native", "commands": [["true"]], "artifact_dir": "index.html", "checks_dir": str(tmp_path)}})
     config.validate()
     return config
 

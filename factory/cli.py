@@ -128,12 +128,6 @@ def main():
                 "studio": profile.studio,
                 "runner": profile.runner,
             }
-        try:
-            result = subprocess.run(["docker", "--host=unix:///var/run/docker.sock", "info", "--format", "{{.ServerVersion}}"],
-                                    capture_output=True, timeout=10)
-            report["docker_available"] = result.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            report["docker_available"] = False
         # A binary the factory will invoke is worth confirming here: an unset FACTORY_PI
         # used to default to a binary that did not exist, so this reports the resolved
         # path rather than assuming the default works.

@@ -85,7 +85,10 @@ def test_independent_tasks_run_together(env):
     root, builder = run(env, plan, worker)
     # left and right overlap; join waits for both, so peak concurrency is 2.
     assert worker.peak == 2
-    assert sorted(p.name for p in root.iterdir() if p.is_file()) == ["join.txt", "left.txt", "right.txt"]
+    # `.gitignore` is part of the base commit now, so the tree is not otherwise empty.
+    merged = {p.name for p in root.iterdir() if p.is_file()}
+    assert {"join.txt", "left.txt", "right.txt"} <= merged
+    assert merged - {"join.txt", "left.txt", "right.txt"} <= {".gitignore"}
 
 
 def test_dependent_task_waits_for_its_dependency(env):

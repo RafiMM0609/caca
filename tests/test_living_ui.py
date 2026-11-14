@@ -315,12 +315,12 @@ def test_the_engine_deals_design_into_a_ui_task_and_not_an_api_task(tmp_path):
     from factory.engine import Engine
     from factory.models import Plan, Profile, ProjectInput, Review
 
-    image = "x@sha256:" + "a" * 64
     settings = Settings(data=tmp_path, operator_token="o" * 40, release_token="r" * 40,
                         model="test/model", pi="/usr/bin/true",
-                        profiles={"static": Profile(image=image,
-                                                    verify_argv=["python3", "/checks/static.py"],
-                                                    checks_dir=str(ROOT / "checks"))})
+                        profiles={"static": Profile(runner="native", commands=[["true"]],
+                                                    artifact_dir="index.html",
+                                                    checks_dir=str(ROOT / "checks"),
+                                                    checks_argv=[["python3", str(ROOT / "checks" / "static.py")]])})
     settings.validate()
     store = Store(tmp_path / "factory.sqlite3")
     plan = Plan(

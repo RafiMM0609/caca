@@ -149,7 +149,13 @@ def test_sequential_merge_lands_every_worker_branch(data):
         branches[name] = work
     for name in ("a", "b", "c"):
         products.merge_branch(root, f"worker/{name}", f"Merge worker {name}")
-    assert sorted(p.name for p in root.iterdir() if p.is_file()) == ["a.txt", "b.txt", "c.txt"]
+    # The base commit now also carries `.gitignore`, which the factory writes so a worker's
+    # build output cannot become the reviewer's diff. The assertion is about the merged worker
+    # files, so it names them explicitly rather than demanding an otherwise empty tree.
+    merged = {p.name for p in root.iterdir() if p.is_file()}
+    assert {"a.txt", "b.txt", "c.txt"} <= merged
+    assert all(name in merged for name in ("a.txt", "b.txt", "c.txt"))
+    assert merged - {"a.txt", "b.txt", "c.txt"} <= {".gitignore"}
 
 
 def test_conflicting_merge_is_reported_and_leaves_target_intact(data):
@@ -197,3 +203,97 @@ def test_unborn_repository_can_host_worktrees(data):
     assert products.head_commit(root)
     work = products.worktree_add(root, data / "wt" / "w", "worker/w")
     assert work.is_dir()
+
+
+def test_changed_files_includes_a_brand_new_file(tmp_path):
+    """`git diff --name-only <base>` never lists an untracked file.
+
+    Measured: a worktree holding a new `main.zig` answered `changed_files() == []` while
+    `git status` reported `?? main.zig`. Every caller runs after a commit, which is why this
+    stayed hidden; the salvage path asks before committing and concluded the worker had written
+    nothing, so three attempts of work were discarded on a live run.
+    """
+    from factory import products
+
+    root = products.ensure_repo(tmp_path, "changed-files-demo")
+    products.checkout_target(root)
+    base = products.head_commit(root)
+    worktree = tmp_path / "wt"
+    products.worktree_add(root, worktree, "worker/new-file")
+
+    (worktree / "created-by-worker.zig").write_text("// new file\n")
+
+    assert "created-by-worker.zig" in products.changed_files(worktree, base)
+    # And the tracked case still works, so the union did not break the original behaviour.
+    products.commit_all(worktree, "wip")
+    assert "created-by-worker.zig" in products.changed_files(worktree, base)
+
+
+def test_changed_files_reports_nothing_for_an_untouched_worktree(tmp_path):
+    """The union must not invent entries: a clean worktree still reports no changes."""
+    from factory import products
+
+    root = products.ensure_repo(tmp_path, "changed-files-clean")
+    products.checkout_target(root)
+    base = products.head_commit(root)
+    worktree = tmp_path / "wt"
+    products.worktree_add(root, worktree, "worker/clean")
+
+    assert products.changed_files(worktree, base) == []
+
+
+def test_a_product_repository_ignores_build_output_from_its_first_commit(tmp_path):
+    """A worker's own build output must never become the reviewer's diff.
+
+    Measured on a live Zig build: the worker ran `zig build` inside its worktree, `commit_all`
+    ran `git add -A`, and the reviewer received "hundreds of `.zig-cache` files" as the change.
+    It rejected the task for noise, the retry repeated the same build, and the job failed after
+    three attempts -- for a reason that has nothing to do with the code.
+
+    The list is kept in step with `artifact.EXCLUDED_DIRS`: a directory the factory will not
+    publish is one a worker must not commit.
+    """
+    from factory import products
+    from factory.artifact import EXCLUDED_DIRS
+
+    root = products.ensure_repo(tmp_path, "ignore-demo")
+    products.checkout_target(root)
+    base = products.head_commit(root)
+    worktree = tmp_path / "wt"
+    products.worktree_add(root, worktree, "worker/builds")
+
+    (worktree / ".zig-cache").mkdir()
+    for index in range(50):
+        (worktree / ".zig-cache" / f"obj{index}.o").write_text("cache\n")
+    (worktree / "zig-out" / "bin").mkdir(parents=True)
+    (worktree / "zig-out" / "bin" / "app").write_text("binary\n")
+    (worktree / "node_modules" / "pkg").mkdir(parents=True)
+    (worktree / "node_modules" / "pkg" / "index.js").write_text("module\n")
+    (worktree / "src").mkdir()
+    (worktree / "src" / "main.zig").write_text("const std = @import(\"std\");\n")
+
+    products.commit_all(worktree, "worker output")
+
+    recorded = products.changed_files(worktree, base)
+    assert recorded == ["src/main.zig"], f"build output leaked into the diff: {recorded}"
+
+    # Every excluded artifact directory must be named in the ignore file, so the two lists
+    # cannot drift: a new EXCLUDED_DIRS entry with no ignore rule reintroduces this bug.
+    ignore_text = (root / ".gitignore").read_text()
+    for directory in EXCLUDED_DIRS - {".git", ".data"}:
+        assert directory in ignore_text, f"{directory} is excluded from artifacts but not ignored"
+
+
+def test_an_existing_repository_still_gets_the_ignore_file(tmp_path):
+    """Repositories created before this rule must be repaired, not just new ones."""
+    from factory import products
+
+    root = products.ensure_repo(tmp_path, "old-demo")
+    # Simulate a repository made by an older release: remove the ignore file from the tree and
+    # commit the removal, so the file is genuinely absent from the checked-out branch.
+    (root / ".gitignore").unlink()
+    products.commit_all(root, "drop ignore file")
+    assert not (root / ".gitignore").exists()
+
+    products.ensure_repo(tmp_path, "old-demo")
+    assert (root / ".gitignore").exists(), "an existing repository must be given the ignore file"
