@@ -10,7 +10,7 @@ import time
 from .agents import PiAgent
 from .db import Store, uid
 from .deploy import Deployer
-from . import diagnosis, serving
+from . import diagnosis, reviewguard, serving
 from .design import DesignDealer, deal_blocks
 from .memory import Memory
 from .models import Plan, Review
@@ -32,6 +32,21 @@ logger = logging.getLogger(__name__)
 # typeface and a motion scheme that the skill can answer from a table.
 DESIGN_SKILLS = frozenset({"design-taste-frontend", "emil-design-eng", "animate",
                            "apple-design", "mobile-native", "break-ui"})
+
+# Extensions whose contents the design rules apply to. A changed `.css` or template file means
+# the review should also judge design; a changed `.zig`, `.py` or `.ts` server module does not.
+INTERFACE_SUFFIXES = (".css", ".html", ".vue", ".svelte", ".jsx", ".tsx", ".scss", ".astro")
+
+
+def interface_changes(changed_files) -> list:
+    """Files in `changed_files` that carry presentation.
+
+    Split out from `review_for` so the condition is testable without a model call: getting it
+    wrong either floods a backend review with CSS rules or skips the design gate on a real page.
+    """
+    return [name for name in changed_files or ()
+            if str(name).lower().endswith(INTERFACE_SUFFIXES)]
+
 
 def _is_zig_profile(profile) -> bool:
     """True when the profile builds with `zig build`.
@@ -71,14 +86,24 @@ PLANNER_PROMPT = (
     "else needs building, plan the source tasks alone. "
     "List unresolved business questions in questions. Do not invent requirements. "
     "The static profile serves plain HTML/CSS/JS, with index.html at the root. "
-    "A zig profile is a Zig HTTP server (std.http.Server or a hand-rolled listener) that serves "
+    "A zig profile is a Zig HTTP server (std.http.Server with a std.net listener) that serves "
     "HTML, CSS and static files itself and returns HTML fragments for HTMX requests; it needs no "
-    "Node, no package.json and no npm install, and it is built with `zig build`. Write Zig that "
-    "compiles against the exact version reported in the toolchain facts -- Zig pre-1.0 changes "
-    "std APIs between minor releases, so do not write from memory. For a zig profile keep "
-    "markup in .html files or inline in Zig, use htmx attributes (hx-get, hx-post, hx-target, "
-    "hx-swap) instead of a JavaScript framework, and serve one fragment per interaction rather "
-    "than a full page. "
+    "Node, no package.json and no npm install, and it is built with `zig build`. The worker is "
+    "given a section of API facts measured by compiling them on this machine; those override "
+    "anything the model remembers, because Zig pre-1.0 changes std between minor releases. "
+    "For a zig profile keep markup in .html files or inline in Zig, use htmx attributes "
+    "(hx-get, hx-post, hx-target, hx-swap) instead of a JavaScript framework, and serve one "
+    "fragment per interaction rather than a full page. "
+    "SIZE EACH ZIG TASK TO ONE SITTING. A task must be small enough that one worker can write "
+    "it, run `zig build`, and fix the compiler errors inside a single budget. Measured: a "
+    "`foundation` task containing the HTTP server, JSON storage, sessions, layout and three "
+    "feature stubs reached 1,310 lines and failed three times at 615-1800s while an 11-file CRUD "
+    "task that did one thing passed on the first attempt in 695s. Split along what compiles "
+    "together: one task for the server skeleton and routing, one for storage, one per feature "
+    "(auth, admin, forum), one for markup and CSS. Independent tasks run in parallel, so more "
+    "small tasks is faster than fewer large ones -- not slower. The first task in a Zig plan "
+    "must define the shared types and function signatures the others call, and every task that "
+    "needs them must declare depends_on it. "
     "Other profiles must follow the operator's verification contract. "
     "Persistence: unless the brief explicitly names an external database "
     "(for example Supabase, Postgres, MySQL or any hosted database with a "
@@ -501,6 +526,11 @@ class Engine:
         # Measured once per build: the exact runtime the verifier will use.
         from .local_app import runtime_facts
         toolchain = runtime_facts()
+        # Compiled once per build, cached per compiler version: eight probes take ~6s warm and
+        # the result is identical for every task in the plan, so it is measured here rather
+        # than inside each worker.
+        from . import zigapi
+        zig_facts = zigapi.prompt_block() if _is_zig_profile(profile) else ""
 
         # The page's design is dealt once per build, before any worker starts, and only when a
         # task in the plan declares a design skill. That is the existing signal that a task is
@@ -551,6 +581,11 @@ class Engine:
                 + ("\n\nRUNTIME ON THIS MACHINE (measured, use these when declaring engine or\n"
                    "dependency constraints; do not invent version ranges):\n" + toolchain
                    if toolchain else "")
+                # Only for a Zig build: the block is empty otherwise, so a Node task pays
+                # nothing. This is what stops a worker writing an API from memory -- the
+                # failure that cost three attempts was `reader.interface()` being reported as
+                # wrong when it is in fact correct.
+                + (("\n\n" + zig_facts) if zig_facts else "")
                 + ("\n\nPERSISTENCE CONTRACT:\n"
                    + ("- This is a Zig application: store data in a file under DATA_DIR (JSON or an\n"
                       "  append-only log). Do not attempt to link SQLite; a C dependency in a first\n"
@@ -578,36 +613,82 @@ class Engine:
 
         def review_for(task, worktree, diff, base):
             # Review sees the diff, not the worker's own description of its work.
-            verdict = self.generate(job["id"], "review",
-                                    "Independently review this diff against the task acceptance criteria and "
-                                    "security. You see only the change. Reject incomplete, unsafe or "
-                                    "unrelated edits. You cannot certify test execution; the verifier does that. "
-                                    "`changed_files` is the authoritative list of every file the worker touched. "
-                                    "Lockfile contents are omitted from `diff` because they are generated and "
-                                    "oversized; a changed lockfile is not an error, and an omitted file is not a "
-                                    "missing file. Judge only what the diff actually shows.\n\n"
-                                    "If the diff contains interface code (CSS, a template, a component), "
-                                    "also review it as design, using these as defects rather than "
-                                    "preferences:\n"
-                                    "- Motion with no stated purpose, or `transition: all`.\n"
-                                    "- `ease-in` or a bare duration with no timing function on an "
-                                    "entrance or hover; decelerating motion reads as responsive.\n"
-                                    "- `outline: none` without a `:focus-visible` replacement; this "
-                                    "removes the keyboard user's position indicator.\n"
-                                    "- Colour alone carrying state, with no text or shape signal.\n"
-                                    "- A solid border where a soft shadow would read as depth, and "
-                                    "inputs left at browser default styling.\n"
-                                    "- Fixed pixel widths that break at 360px, or body text smaller "
-                                    "than 14px.\n"
-                                    "- `user-select: none` on content a reader may want to copy.\n"
-                                    "Reject a change that has these; do not reject one merely because a "
-                                    "layout differs from how you would have drawn it. You cannot run a "
-                                    "browser, so judge what the CSS and markup will do, not how it looks.",
+            #
+            # The design section is added only when the diff touches markup or CSS. It is 68% of
+            # this prompt (1,598 of 2,365 characters) and is irrelevant to a storage or router
+            # module, so sending it always made a backend review read rules about `ease-in` and
+            # `outline: none` before deciding anything. Measured: review was 37% of a build's
+            # wall clock, and `json-storage` (2 files, no CSS) spent 144s -- longer than the
+            # worker that wrote it. The rules themselves are kept verbatim; only whether they are
+            # sent is now conditional.
+            changed = products.changed_files(worktree, base)
+            interface_files = interface_changes(changed)
+            # Build FIRST, before the reviewer forms an opinion.
+            #
+            # A reviewer recalling an API from training data was wrong about whether code
+            # compiles in 11 of 51 findings (22%), and two whole rejections from false claims
+            # alone. Dropping those findings afterwards by matching phrasing is reactive -- new
+            # wordings kept slipping through. Running the build here makes compilation a fact the
+            # reviewer is *shown*: if it passed, a "does not compile" finding contradicts the
+            # evidence in its own prompt; if it failed, the reviewer cites the real error instead
+            # of guessing. Measured cost: 0.11s warm, 16s cold, against worker runs of minutes.
+            build = reviewguard.precheck(profile, worktree)
+            store.event(project["id"], job["id"], "review.precheck",
+                        {"task": task.id, "ran": build["ran"], "ok": build["ok"]})
+            instruction = (
+                "Independently review this diff against the task acceptance criteria and "
+                "security. You see only the change. Reject incomplete, unsafe or "
+                "unrelated edits. You cannot certify test execution; the verifier does that. "
+                "`changed_files` is the authoritative list of every file the worker touched. "
+                "Lockfile contents are omitted from `diff` because they are generated and "
+                "oversized; a changed lockfile is not an error, and an omitted file is not a "
+                "missing file. Judge only what the diff actually shows.")
+            if interface_files:
+                instruction += (
+                    "\n\nThis diff contains interface code, so also review it as design, using "
+                    "these as defects rather than preferences:\n"
+                    "- Motion with no stated purpose, or `transition: all`.\n"
+                    "- `ease-in` or a bare duration with no timing function on an "
+                    "entrance or hover; decelerating motion reads as responsive.\n"
+                    "- `outline: none` without a `:focus-visible` replacement; this "
+                    "removes the keyboard user's position indicator.\n"
+                    "- Colour alone carrying state, with no text or shape signal.\n"
+                    "- A solid border where a soft shadow would read as depth, and "
+                    "inputs left at browser default styling.\n"
+                    "- Fixed pixel widths that break at 360px, or body text smaller "
+                    "than 14px.\n"
+                    "- `user-select: none` on content a reader may want to copy.\n"
+                    "Reject a change that has these; do not reject one merely because a "
+                    "layout differs from how you would have drawn it. You cannot run a "
+                    "browser, so judge what the CSS and markup will do, not how it looks.")
+            instruction += reviewguard.prompt_block(build)
+            verdict = self.generate(job["id"], "review", instruction,
                                     {"brief": project["brief"], "task": task.model_dump(),
-                                     "changed_files": products.changed_files(worktree, base),
+                                     "changed_files": changed,
                                      "diff": diff or "(no file changes)"}, Review, cancelled)
-            atomic_json(work / f"{task.id}-review.json", verdict.model_dump())
-            return verdict.model_dump()
+            # A review that claims the code does not compile is checked against the compiler
+            # before it can reject anything. Three live attempts were spent on findings that
+            # began "Build-breaking" while the tree compiled clean and served HTTP; the reviewer
+            # was wrong about a fact, and the worker was sent to fix code that was already
+            # right. Only that narrow claim is tested -- a review that fails on design, safety
+            # or completeness is left exactly as written.
+            raw = verdict.model_dump()
+            # `precheck` already ran this build a moment ago, so reconcile reuses the result
+            # instead of compiling the same worktree twice.
+            resolved, guard = reviewguard.reconcile(raw, profile, worktree, build=build)
+            atomic_json(work / f"{task.id}-review.json", resolved)
+            if guard.get("checked"):
+                atomic_json(work / f"{task.id}-review-build-check.json", guard)
+                store.event(project["id"], job["id"], "review.build_check",
+                            {"task": task.id, "ran": guard.get("ran"), "ok": guard.get("ok"),
+                             "disproved": guard.get("disproved", 0),
+                             "surviving_findings": guard.get("surviving_findings")})
+                if guard.get("disproved"):
+                    store.event(project["id"], job["id"], "review.build_claim_disproved",
+                                {"task": task.id, "findings": guard.get("claimed", [])[:3],
+                                 "note": "the profile's own build succeeded; these findings "
+                                         "were dropped and did not reject the task"})
+            return resolved
 
         workers_used = []
         studio_branch = None

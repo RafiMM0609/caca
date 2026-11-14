@@ -292,6 +292,16 @@ class ParallelBuilder:
             # what makes the task visual.
             timeout = (self.settings.skill_worker_timeout if task.skills
                        else self.settings.worker_timeout)
+            # The budget is recorded before the run, not inferred afterwards. A live run was
+            # killed at 615s (agent_timeout + 15) while the scheduler's environment said
+            # FACTORY_WORKER_TIMEOUT=1800, and nothing in the evidence said which clock the
+            # worker had actually been given -- so the cause had to be guessed. This line makes
+            # the next occurrence answerable by reading one event instead of an AST audit.
+            store.event(project["id"], job["id"], "worker.budget",
+                        {"task": task.id, "worker": worker_id, "timeout_seconds": timeout,
+                         "uses_skill_clock": bool(task.skills),
+                         "configured_worker_timeout": self.settings.worker_timeout,
+                         "configured_agent_timeout": self.settings.agent_timeout})
             transcript = self.worker.run_task(worktree, instruction,
                                              timeout=timeout,
                                              cancelled=cancelled,
@@ -347,7 +357,41 @@ class ParallelBuilder:
             output = getattr(exc, "output", "")
             if output:
                 detail["output"] = str(output)[-4000:]
+            # A worker that hit its deadline or crashed mid-edit leaves real work in the
+            # worktree, and the retry starts from a freshly deleted branch -- so without this,
+            # every attempt throws away everything the model wrote. Measured on Komunitas
+            # Petani Nusantara: three attempts, ~1,310 lines of Zig each, nothing committed,
+            # two hours of wall clock for zero merged tasks.
+            #
+            # This commit does not accept the work: the worker is still marked failed and the
+            # task still retries. It only stops the next attempt from starting from nothing,
+            # and it gives the operator something to inspect. The branch is deleted before the
+            # next attempt, so this is a snapshot for diagnosis and for the salvage path, not a
+            # merge candidate.
+            salvaged = []
+            try:
+                if worktree.is_dir():
+                    # Commit FIRST, then ask what changed. `git diff --name-only <base>` lists
+                    # tracked changes only, so a worker that wrote brand-new files reported an
+                    # empty diff and this salvage silently did nothing -- measured: a worktree
+                    # holding a new main.zig answered `changed_files == []`. After the commit the
+                    # files are tracked and the same call returns them.
+                    before_head = products.head_commit(worktree)
+                    after_head = products.commit_all(
+                        worktree, f"WIP {task.id} (attempt {prior_attempts + 1}, failed: "
+                                  f"{type(exc).__name__})")
+                    if after_head and after_head != before_head:
+                        changed_now = products.changed_files(worktree, base)
+                        salvaged = changed_now
+                        detail["salvaged_files"] = changed_now[:40]
+                        detail["salvage_commit"] = after_head
+            except Exception as salvage_exc:  # noqa: BLE001 - never mask the original failure
+                detail["salvage_error"] = type(salvage_exc).__name__
             store.set_worker(worker_id, state="failed", detail=detail)
+            if salvaged:
+                store.event(project["id"], job["id"], "worker.salvaged",
+                            {"task": task.id, "worker": worker_id, "files": salvaged[:40],
+                             "reason": type(exc).__name__})
             store.event(project["id"], job["id"], "worker.failed", {"task": task.id, "error": type(exc).__name__})
             return WorkerOutcome(task.id, "failed", branch, worktree, "", base, detail)
 

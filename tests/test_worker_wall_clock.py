@@ -215,3 +215,126 @@ def test_no_worker_call_site_falls_back_to_the_agent_clock():
     assert not missing, (
         "these run_task calls inherit agent_timeout (600s) instead of worker_timeout: "
         + ", ".join(f"{name}:{line}" for name, line in missing))
+
+
+# -- the budget is recorded, so a live timeout is answerable from evidence ------------------
+
+def test_the_worker_budget_that_was_used_is_recorded_before_the_run(tmp_path):
+    """A live run was killed at 615s while config said worker_timeout=1800.
+
+    Nothing in the evidence named the clock the worker had actually been given, so the cause
+    had to be reconstructed by auditing every call site. The event makes the next occurrence a
+    one-line read: the budget passed in, the clock kind, and both configured values.
+    """
+    from factory.db import Store
+
+    settings = settings_at(tmp_path, agent_timeout=600, worker_timeout=1800,
+                           skill_worker_timeout=3600)
+    settings.validate()
+    store = Store(tmp_path / "factory.sqlite3")
+    project = store.create_project(ProjectInput(name="Budget demo",
+                                                brief="A product with one task to build."))
+    plan = Plan.model_validate({
+        "summary": "A plan with exactly one task to build.",
+        "tasks": [{"id": "only", "title": "Build it",
+                   "instructions": "Build the thing the brief asks for.", "acceptance": ["works"]}],
+        "test_flows": []})
+
+    class RecordingWorker:
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                     skills=()):
+            (Path(worktree) / "x.txt").write_text("x\n")
+            return "transcript"
+
+    ParallelBuilder(settings, store, worker=RecordingWorker()).build_tasks(
+        store.project(project["id"]), {"id": "job-budget", "payload": "{}"}, plan,
+        lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+
+    import json
+    rows = [json.loads(row["detail"]) for row in store.all(
+        "SELECT detail FROM events WHERE kind='worker.budget'")]
+    assert rows, "the worker budget must be recorded before the worker runs"
+    recorded = rows[0]
+    assert recorded["timeout_seconds"] == 1800, recorded
+    assert recorded["configured_worker_timeout"] == 1800
+    assert recorded["configured_agent_timeout"] == 600
+    assert recorded["uses_skill_clock"] is False
+
+
+# -- a failed attempt keeps the work it produced --------------------------------------------
+
+def test_a_worker_that_dies_mid_edit_commits_what_it_wrote(tmp_path):
+    """Three attempts of ~1,310 lines each were thrown away because only success committed.
+
+    The commit does not accept the work -- the worker is still failed and the task still
+    retries. It stops the retry from starting at zero and gives the operator something to
+    inspect.
+    """
+    import json
+
+    from factory.db import Store
+
+    settings = settings_at(tmp_path, worker_timeout=1800)
+    settings.validate()
+    store = Store(tmp_path / "factory.sqlite3")
+    project = store.create_project(ProjectInput(
+        name="Salvage demo", brief="A product whose worker dies halfway through writing."))
+    plan = Plan.model_validate({
+        "summary": "A plan whose only task will fail in the middle of writing its files.",
+        "tasks": [{"id": "only", "title": "Build it",
+                   "instructions": "Build the thing the brief asks for.", "acceptance": ["works"]}],
+        "test_flows": []})
+
+    class DyingWorker:
+        """Writes real files, then reports a deadline -- exactly what the live run did."""
+
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                     skills=()):
+            target = Path(worktree)
+            (target / "src").mkdir(exist_ok=True)
+            (target / "src" / "main.zig").write_text("// 400 lines the model already wrote\n")
+            (target / "src" / "store.zig").write_text("// another 500 lines\n")
+            raise RuntimeError("Process exceeded its 1800s deadline and was stopped")
+
+    # A wave in which every task failed raises, which is correct: the build did fail. The
+    # subject of this test is the salvage record, so the raise is expected and caught.
+    with pytest.raises(ValueError):
+        ParallelBuilder(settings, store, worker=DyingWorker()).build_tasks(
+            store.project(project["id"]), {"id": "job-salvage", "payload": "{}"}, plan,
+            lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+
+    # The work must exist in git, not only on disk, because the next attempt deletes the branch.
+    rows = [json.loads(row["detail"]) for row in store.all(
+        "SELECT detail FROM events WHERE kind='worker.salvaged'")]
+    assert rows, "a failed attempt that wrote files must record what it salvaged"
+    salvaged = rows[0]["files"]
+    assert any("main.zig" in name for name in salvaged), salvaged
+    assert any("store.zig" in name for name in salvaged), salvaged
+
+
+def test_a_worker_that_writes_nothing_records_no_salvage(tmp_path):
+    """An empty failure must not claim a salvage; a false record is worse than none."""
+    from factory.db import Store
+
+    settings = settings_at(tmp_path, worker_timeout=1800)
+    settings.validate()
+    store = Store(tmp_path / "factory.sqlite3")
+    project = store.create_project(ProjectInput(
+        name="Empty failure", brief="A product whose worker fails without writing anything."))
+    plan = Plan.model_validate({
+        "summary": "A plan whose only task fails before it writes any files at all.",
+        "tasks": [{"id": "only", "title": "Build it",
+                   "instructions": "Build the thing the brief asks for.", "acceptance": ["works"]}],
+        "test_flows": []})
+
+    class FailingWorker:
+        def run_task(self, worktree, instruction, model="", timeout=0, cancelled=lambda: False,
+                     skills=()):
+            raise RuntimeError("Process exceeded its 1800s deadline and was stopped")
+
+    with pytest.raises(ValueError):
+        ParallelBuilder(settings, store, worker=FailingWorker()).build_tasks(
+            store.project(project["id"]), {"id": "job-empty", "payload": "{}"}, plan,
+            lambda task, ctx: f"YOUR TASK ({task.id}) do it", lambda: False)
+
+    assert not store.all("SELECT detail FROM events WHERE kind='worker.salvaged'")
